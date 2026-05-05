@@ -1,0 +1,15 @@
+{
+  "name": "silmaril-sdk-examples",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runnable notebooks and scripts for @silmaril-security/sdk",
+  "dependencies": {
+    "@ai-sdk/openai": "^2.0.0",
+    "@silmaril-security/sdk": "file:..",
+    "ai": "^5.0.0"
+  },
+  "devDependencies": {
+    "tslab": "^1.0.22"
+  }
+}

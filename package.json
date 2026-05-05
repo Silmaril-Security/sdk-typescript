@@ -1,0 +1,83 @@
+{
+  "name": "@silmaril-security/sdk",
+  "version": "0.1.4",
+  "description": "TypeScript SDK for Silmaril Firewall — prompt injection and jailbreak detection",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Silmaril Security Inc.",
+  "type": "module",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Silmaril-Security/sdk-typescript.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Silmaril-Security/sdk-typescript/issues"
+  },
+  "homepage": "https://github.com/Silmaril-Security/sdk-typescript#readme",
+  "keywords": [
+    "silmaril",
+    "firewall",
+    "prompt-injection",
+    "jailbreak",
+    "llm-security",
+    "ai-security",
+    "langchain",
+    "vercel-ai"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepare": "tsup",
+    "typecheck": "tsc --noEmit && npm run typecheck:notebooks",
+    "typecheck:notebooks": "node scripts/typecheck-notebooks.mjs",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "peerDependencies": {
+    "@langchain/core": ">=0.3.0",
+    "ai": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@langchain/core": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^2.0.0",
+    "@langchain/core": "^1.1.39",
+    "@types/node": "^20.12.0",
+    "@typescript-eslint/eslint-plugin": "^7.8.0",
+    "@typescript-eslint/parser": "^7.8.0",
+    "ai": "^5.0.52",
+    "eslint": "^8.57.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "undici": "^6.15.0",
+    "vitest": "^4.1.4"
+  }
+}
