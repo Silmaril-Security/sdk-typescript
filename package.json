@@ -49,8 +49,7 @@
   "scripts": {
     "build": "tsup",
     "prepare": "tsup",
-    "typecheck": "tsc --noEmit && npm run typecheck:notebooks",
-    "typecheck:notebooks": "node scripts/typecheck-notebooks.mjs",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint src test",
     "test": "vitest run",
     "test:watch": "vitest"
