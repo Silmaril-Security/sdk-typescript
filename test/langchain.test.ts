@@ -169,6 +169,18 @@ describe("LangChain adapter — input hooks", () => {
       handler.handleToolEnd("suspicious output", "run-1", undefined, undefined, { name: "read_file" }),
     ).rejects.toBeInstanceOf(PromptBlockedException);
   });
+
+  it("rejects invalid adapter threshold overrides", async () => {
+    const { firewall } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    await expect(createLangChainHandler(firewall, { threshold: Number.NaN })).rejects.toThrow(
+      /threshold must be a finite number between 0 and 1/,
+    );
+    await expect(
+      createLangChainHandler(firewall, {
+        hookThresholds: { [HookLabel.TOOL_RESPONSE]: Number.POSITIVE_INFINITY },
+      }),
+    ).rejects.toThrow(/hookThresholds/);
+  });
 });
 
 describe("LangChain adapter — fail-open / fail-closed", () => {

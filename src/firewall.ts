@@ -17,12 +17,14 @@ import type {
   MiddlewareOptions,
   Prediction,
 } from "./types.js";
+import { validateHookThresholds, validateThreshold } from "./validation.js";
 
 export const DEFAULT_THRESHOLD = 0.5;
 export const DEFAULT_TIMEOUT_MS = 10_000;
 export const DEFAULT_CHUNK_CONCURRENCY = 8;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
+const MAX_ERROR_BODY_BYTES = 1 << 16;
 
 interface SingleClassifyPayload {
   text: string;
@@ -84,6 +86,46 @@ function blockResultFromResponse(data: SingleClassifyResponse): BlockResult {
   return Object.freeze(result);
 }
 
+async function readCappedErrorBody(response: Response): Promise<string> {
+  if (!response.body) {
+    return response.text().then((body) => body.slice(0, MAX_ERROR_BODY_BYTES)).catch(() => "");
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let remaining = MAX_ERROR_BODY_BYTES;
+  try {
+    while (remaining > 0) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+      const chunk = value.byteLength > remaining ? value.slice(0, remaining) : value;
+      chunks.push(chunk);
+      remaining -= chunk.byteLength;
+      if (chunk.byteLength < value.byteLength) {
+        break;
+      }
+    }
+  } catch {
+    return "";
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+}
+
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
@@ -136,15 +178,18 @@ export class Firewall {
     }
     this.apiKey = options.apiKey;
     this.apiUrl = options.apiUrl;
-    this.threshold = options.threshold ?? DEFAULT_THRESHOLD;
+    this.threshold = validateThreshold("threshold", options.threshold ?? DEFAULT_THRESHOLD);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (typeof this.timeoutMs !== "number" || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 0) {
+      throw new Error(`Firewall: timeoutMs must be a finite non-negative number, got ${this.timeoutMs}`);
+    }
     this.chunkConcurrency = options.chunkConcurrency ?? DEFAULT_CHUNK_CONCURRENCY;
     if (!Number.isInteger(this.chunkConcurrency) || this.chunkConcurrency < 1) {
       throw new Error(
         `Firewall: chunkConcurrency must be an integer >= 1, got ${this.chunkConcurrency}`,
       );
     }
-    this.hookThresholds = Object.freeze({ ...(options.hookThresholds ?? {}) });
+    this.hookThresholds = Object.freeze(validateHookThresholds("hookThresholds", options.hookThresholds));
     this.shadowMode = options.shadowMode ?? false;
     this.headers = Object.freeze({
       "x-api-key": this.apiKey,
@@ -221,11 +266,12 @@ export class Firewall {
         method: "POST",
         headers: this.headers,
         body: JSON.stringify(payload),
+        redirect: "error",
         signal: AbortSignal.timeout(this.timeoutMs),
       });
       if (response.status !== 429 || attempt === maxRetries) {
         if (!response.ok) {
-          const body = await response.text().catch(() => "");
+          const body = await readCappedErrorBody(response);
           throw new SilmarilApiError({
             status: response.status,
             statusText: response.statusText,

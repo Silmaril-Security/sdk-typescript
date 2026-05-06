@@ -4,13 +4,14 @@ import { describe, expect, it } from "vitest";
 import { PromptBlockedException, SilmarilApiError } from "../src/index.js";
 
 describe("SilmarilApiError", () => {
-  it("composes a message with status, statusText, and body", () => {
+  it("composes a redacted message with status and statusText", () => {
     const err = new SilmarilApiError({
       status: 500,
       statusText: "Internal Server Error",
       body: "boom",
     });
-    expect(err.message).toBe("Silmaril API error 500 Internal Server Error: boom");
+    expect(err.message).toBe("Silmaril API error 500 Internal Server Error");
+    expect(err.message).not.toContain("boom");
   });
 
   it("preserves status, statusText, and body as readable fields", () => {
@@ -33,7 +34,7 @@ describe("SilmarilApiError", () => {
 
   it("tolerates an empty body string without changing the message format", () => {
     const err = new SilmarilApiError({ status: 429, statusText: "Too Many Requests", body: "" });
-    expect(err.message).toBe("Silmaril API error 429 Too Many Requests: ");
+    expect(err.message).toBe("Silmaril API error 429 Too Many Requests");
   });
 });
 

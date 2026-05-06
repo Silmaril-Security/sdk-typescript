@@ -11,6 +11,7 @@ import {
 } from "../src/index.js";
 
 const TEST_API_URL = "https://api.test.invalid/classify";
+const ERROR_BODY_CAP = 1 << 16;
 
 interface MockCall {
   url: string;
@@ -87,6 +88,29 @@ describe("Firewall constructor", () => {
     expect(() => new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, chunkConcurrency: 1.5 }))
       .toThrow(/chunkConcurrency must be an integer >= 1/);
   });
+
+  it("rejects invalid thresholds", () => {
+    for (const threshold of [Number.NaN, Number.POSITIVE_INFINITY, -0.1, 1.1]) {
+      expect(() => new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, threshold })).toThrow(
+        /threshold must be a finite number between 0 and 1/,
+      );
+    }
+    expect(() =>
+      new Firewall({
+        apiKey: "sk-test",
+        apiUrl: TEST_API_URL,
+        hookThresholds: { [HookLabel.USER_INPUT]: Number.NaN },
+      }),
+    ).toThrow(/hookThresholds/);
+  });
+
+  it("rejects invalid timeoutMs", () => {
+    expect(() => new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, timeoutMs: -1 }))
+      .toThrow(/timeoutMs must be a finite non-negative number/);
+    expect(() =>
+      new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, timeoutMs: Number.NaN }),
+    ).toThrow(/timeoutMs must be a finite non-negative number/);
+  });
 });
 
 describe("Firewall.classify", () => {
@@ -108,6 +132,7 @@ describe("Firewall.classify", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(TEST_API_URL);
     expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.redirect).toBe("error");
     const headers = calls[0]!.init.headers as Record<string, string>;
     expect(headers["x-api-key"]).toBe("sk-test");
     expect(headers["content-type"]).toBe("application/json");
@@ -579,6 +604,7 @@ describe("Firewall — error handling", () => {
     expect(err.status).toBe(400);
     expect(err.statusText).toBe("status-400");
     expect(err.body).toBe("bad request body text");
+    expect(err.message).toBe("Silmaril API error 400 status-400");
   });
 
   it("wraps 4xx responses with a JSON body into SilmarilApiError", async () => {
@@ -594,6 +620,40 @@ describe("Firewall — error handling", () => {
     const err = caught as SilmarilApiError;
     expect(err.status).toBe(401);
     expect(err.body).toBe('{"error":"bad key"}');
+    expect(err.message).not.toContain("bad key");
+  });
+
+  it("wraps redirect responses into SilmarilApiError", async () => {
+    const { calls } = mockFetch([{ status: 302, body: "redirect" }]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    let caught: unknown;
+    try {
+      await fw.classify("x");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SilmarilApiError);
+    const err = caught as SilmarilApiError;
+    expect(calls[0]!.init.redirect).toBe("error");
+    expect(err.status).toBe(302);
+    expect(err.body).toBe("redirect");
+  });
+
+  it("caps API error bodies and keeps them out of the default message", async () => {
+    const body = "x".repeat(ERROR_BODY_CAP + 1024);
+    mockFetch([{ status: 400, body }]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    let caught: unknown;
+    try {
+      await fw.classify("x");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SilmarilApiError);
+    const err = caught as SilmarilApiError;
+    expect(err.body).toBe(body.slice(0, ERROR_BODY_CAP));
+    expect(err.body).toHaveLength(ERROR_BODY_CAP);
+    expect(err.message).not.toContain(body.slice(0, 128));
   });
 
   it("parses malformed-input diagnostic details from JSON error bodies", async () => {

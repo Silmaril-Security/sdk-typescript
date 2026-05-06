@@ -131,8 +131,9 @@ interface FirewallOptions {
 ```
 
 `threshold` and `hookThresholds` are used by adapters when deciding whether a
-classification should block. Direct `classify()` and `classifyBatch()` calls
-return scores so callers can enforce their own policy.
+classification should block. Threshold values must be finite numbers in `[0, 1]`.
+Direct `classify()` and `classifyBatch()` calls return scores so callers can
+enforce their own policy.
 
 To set a threshold:
 
@@ -222,7 +223,7 @@ metadata as structured JSON fields, so normal callers should use the `hook`,
 
 ## Errors
 
-- `SilmarilApiError`: thrown when the firewall API responds with a non-2xx status. Carries `status`, `statusText`, `body`, and any parsed malformed-input diagnostics.
+- `SilmarilApiError`: thrown when the firewall API responds with a non-2xx or redirect status. Carries `status`, `statusText`, a 64 KiB-capped `body`, and any parsed malformed-input diagnostics. The default error message omits the body to keep logs clean.
 - `PromptBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters in enforcement mode when the score meets or exceeds the effective threshold. Carries `score`, `threshold`, `promptText`, and optional `runId`.
 
 All SDK exception types extend `Error` and work with `instanceof`.
@@ -329,8 +330,9 @@ users do not pay for it.
 ## Retries
 
 HTTP 429 responses are retried with exponential backoff capped at 30s, up to 5
-times. Other non-2xx responses are surfaced as `SilmarilApiError`, and transport
-or timeout failures are surfaced unchanged.
+times. Redirects are rejected rather than followed. Other non-2xx responses are
+surfaced as `SilmarilApiError`, and transport or timeout failures are surfaced
+unchanged.
 
 ## Development
 

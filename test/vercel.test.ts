@@ -30,6 +30,18 @@ function makeFirewall(
 }
 
 describe("Vercel middleware — wrapGenerate", () => {
+  it("rejects invalid middleware threshold overrides", () => {
+    const { firewall } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    expect(() => createMiddleware(firewall, { threshold: Number.NaN })).toThrow(
+      /threshold must be a finite number between 0 and 1/,
+    );
+    expect(() =>
+      createMiddleware(firewall, {
+        hookThresholds: { [HookLabel.USER_INPUT]: Number.POSITIVE_INFINITY },
+      }),
+    ).toThrow(/hookThresholds/);
+  });
+
   it("classifies the prompt before calling doGenerate (benign passes)", async () => {
     const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
     const middleware = createMiddleware(firewall);

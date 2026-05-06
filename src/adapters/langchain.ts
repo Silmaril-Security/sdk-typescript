@@ -18,6 +18,7 @@ import {
   extractTextFromPrompts,
   extractTextFromToolInput,
 } from "../utils/extract.js";
+import { validateHookThresholds, validateOptionalThreshold } from "../validation.js";
 
 const USER_ROLES: ReadonlySet<string> = new Set(["human", "user"]);
 
@@ -85,8 +86,8 @@ export async function createLangChainHandler(
       // eslint-disable-next-line no-console
       console.warn(`silmaril.firewall: ${message}`, error);
     });
-  const overrideThreshold = options.threshold;
-  const overrideHookThresholds = options.hookThresholds ?? {};
+  const overrideThreshold = validateOptionalThreshold("threshold", options.threshold);
+  const overrideHookThresholds = validateHookThresholds("hookThresholds", options.hookThresholds);
   const shadowMode = options.shadowMode ?? firewall.shadowMode;
   const onClassify = options.onClassify;
 

@@ -5,6 +5,7 @@ import type { Firewall } from "../firewall.js";
 import { PromptBlockedException } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
 import type { BlockResult, MiddlewareOptions } from "../types.js";
+import { validateHookThresholds, validateOptionalThreshold } from "../validation.js";
 
 interface VercelContentPart {
   type?: string;
@@ -128,8 +129,8 @@ export function createMiddleware(
 ): FirewallMiddleware {
   const scanInput = options.scanInput ?? true;
   const scanOutput = options.scanOutput ?? false;
-  const overrideThreshold = options.threshold;
-  const overrideHookThresholds = options.hookThresholds ?? {};
+  const overrideThreshold = validateOptionalThreshold("threshold", options.threshold);
+  const overrideHookThresholds = validateHookThresholds("hookThresholds", options.hookThresholds);
   const shadowMode = options.shadowMode ?? firewall.shadowMode;
 
   const effectiveThreshold = (label: HookLabel): number => {

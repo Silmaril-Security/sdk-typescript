@@ -66,7 +66,8 @@ export class SilmarilApiError extends Error {
     error?: string;
     apiMessage?: string;
   }) {
-    super(`Silmaril API error ${params.status} ${params.statusText}: ${params.body}`);
+    const statusText = params.statusText ? ` ${params.statusText}` : "";
+    super(`Silmaril API error ${params.status}${statusText}`);
     this.name = "SilmarilApiError";
     this.status = params.status;
     this.statusText = params.statusText;
