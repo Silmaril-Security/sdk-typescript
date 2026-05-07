@@ -4,7 +4,6 @@
 export {
   Firewall,
   DEFAULT_CHUNK_CONCURRENCY,
-  DEFAULT_THRESHOLD,
   DEFAULT_TIMEOUT_MS,
 } from "./firewall.js";
 
@@ -31,7 +30,6 @@ export {
   INPUT_HOOKS,
   OUTPUT_HOOKS,
   ALL_HOOKS,
-  DEFAULT_HOOK_THRESHOLDS,
   FIREWALL_HOOK_TO_LABEL,
   resolveHooks,
   prependHook,

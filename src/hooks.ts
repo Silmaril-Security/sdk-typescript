@@ -57,15 +57,6 @@ export const FIREWALL_HOOK_TO_LABEL: Readonly<Record<FirewallHook, HookLabel>> =
   [FirewallHook.LLM_END]: HookLabel.LLM_OUTPUT,
 };
 
-export const DEFAULT_HOOK_THRESHOLDS: Readonly<Record<HookLabel, number>> = {
-  [HookLabel.USER_INPUT]: 0.5,
-  [HookLabel.SYSTEM_PROMPT]: 0.5,
-  [HookLabel.TOOL_CALL]: 0.5,
-  [HookLabel.TOOL_RESPONSE]: 0.5,
-  [HookLabel.LLM_OUTPUT]: 0.5,
-  [HookLabel.UNKNOWN]: 0.5,
-};
-
 const FIREWALL_HOOK_VALUES: ReadonlySet<string> = new Set(Object.values(FirewallHook));
 
 export function resolveHooks(

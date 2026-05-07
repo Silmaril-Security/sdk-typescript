@@ -18,7 +18,6 @@ import {
   extractTextFromPrompts,
   extractTextFromToolInput,
 } from "../utils/extract.js";
-import { validateHookThresholds, validateOptionalThreshold } from "../validation.js";
 
 const USER_ROLES: ReadonlySet<string> = new Set(["human", "user"]);
 
@@ -86,20 +85,8 @@ export async function createLangChainHandler(
       // eslint-disable-next-line no-console
       console.warn(`silmaril.firewall: ${message}`, error);
     });
-  const overrideThreshold = validateOptionalThreshold("threshold", options.threshold);
-  const overrideHookThresholds = validateHookThresholds("hookThresholds", options.hookThresholds);
   const shadowMode = options.shadowMode ?? firewall.shadowMode;
   const onClassify = options.onClassify;
-
-  const effectiveThreshold = (label: HookLabel): number => {
-    if (overrideHookThresholds[label] !== undefined) {
-      return overrideHookThresholds[label] as number;
-    }
-    if (firewall.hookThresholds[label] !== undefined) {
-      return firewall.hookThresholds[label] as number;
-    }
-    return overrideThreshold ?? firewall.threshold;
-  };
 
   const fireOnClassify = (
     hookLabel: HookLabel,
@@ -144,7 +131,7 @@ export async function createLangChainHandler(
       logger("classification failed, allowing prompt through", err);
       return;
     }
-    const threshold = effectiveThreshold(hookLabel);
+    const threshold = result.threshold;
     const blocked = result.score >= threshold;
     fireOnClassify(hookLabel, text, result, blocked, toolName);
     if (blocked && !shadowMode) {

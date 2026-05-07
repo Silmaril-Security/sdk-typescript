@@ -8,6 +8,7 @@ export type Prediction = "BENIGN" | "MALICIOUS";
 export interface BlockResult {
   readonly prediction: Prediction;
   readonly score: number;
+  readonly threshold: number;
   readonly primaryOutcome?: string;
   readonly outcomeScores?: Readonly<Record<string, number>>;
   readonly detectorScores?: Readonly<Record<string, number>>;
@@ -17,10 +18,8 @@ export interface BlockResult {
 export interface FirewallOptions {
   apiKey: string;
   apiUrl: string;
-  threshold?: number;
   timeoutMs?: number;
   chunkConcurrency?: number;
-  hookThresholds?: Partial<Record<HookLabel, number>>;
   shadowMode?: boolean;
 }
 
@@ -39,8 +38,6 @@ export interface ClassifyBatchOptions {
 }
 
 export interface LangChainAdapterOptions {
-  threshold?: number;
-  hookThresholds?: Partial<Record<HookLabel, number>>;
   hooks?: ReadonlySet<FirewallHook>;
   includeSystem?: boolean;
   includeTool?: boolean;
@@ -63,8 +60,6 @@ export interface MiddlewareOptions {
   scanInput?: boolean;
   scanOutput?: boolean;
   scanToolCalls?: boolean;
-  threshold?: number;
-  hookThresholds?: Partial<Record<HookLabel, number>>;
   shadowMode?: boolean;
   onBlocked?: (err: Error) => void;
   onClassify?: (event: ClassifyEvent) => void;

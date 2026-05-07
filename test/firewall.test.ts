@@ -3,12 +3,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_CHUNK_CONCURRENCY,
-  DEFAULT_THRESHOLD,
   DEFAULT_TIMEOUT_MS,
   Firewall,
   HookLabel,
   SilmarilApiError,
 } from "../src/index.js";
+import { adaptiveThreshold } from "../src/firewall.js";
 
 const TEST_API_URL = "https://api.test.invalid/classify";
 const ERROR_BODY_CAP = 1 << 16;
@@ -55,10 +55,18 @@ describe("Firewall constructor", () => {
     );
   });
 
-  it("applies defaults for threshold and timeoutMs", () => {
+  it("computes the adaptive threshold schedule", () => {
+    expect(adaptiveThreshold(1)).toBe(0.5);
+    expect(adaptiveThreshold(2)).toBeCloseTo(0.6661087830919008);
+    expect(adaptiveThreshold(5)).toBeCloseTo(0.8327747955407889);
+    expect(adaptiveThreshold(10)).toBe(0.9);
+    expect(adaptiveThreshold(100)).toBe(0.9);
+    expect(() => adaptiveThreshold(0)).toThrow(/scoringOpportunityCount/);
+  });
+
+  it("applies defaults for timeoutMs", () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     expect(fw.apiUrl).toBe(TEST_API_URL);
-    expect(fw.threshold).toBe(DEFAULT_THRESHOLD);
     expect(fw.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
     expect(fw.chunkConcurrency).toBe(DEFAULT_CHUNK_CONCURRENCY);
     expect(fw.shadowMode).toBe(false);
@@ -68,17 +76,13 @@ describe("Firewall constructor", () => {
     const fw = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://example.test/classify",
-      threshold: 0.9,
       timeoutMs: 5000,
       chunkConcurrency: 3,
-      hookThresholds: { [HookLabel.TOOL_RESPONSE]: 0.25 },
       shadowMode: true,
     });
     expect(fw.apiUrl).toBe("https://example.test/classify");
-    expect(fw.threshold).toBe(0.9);
     expect(fw.timeoutMs).toBe(5000);
     expect(fw.chunkConcurrency).toBe(3);
-    expect(fw.hookThresholds[HookLabel.TOOL_RESPONSE]).toBe(0.25);
     expect(fw.shadowMode).toBe(true);
   });
 
@@ -87,21 +91,6 @@ describe("Firewall constructor", () => {
       .toThrow(/chunkConcurrency must be an integer >= 1/);
     expect(() => new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, chunkConcurrency: 1.5 }))
       .toThrow(/chunkConcurrency must be an integer >= 1/);
-  });
-
-  it("rejects invalid thresholds", () => {
-    for (const threshold of [Number.NaN, Number.POSITIVE_INFINITY, -0.1, 1.1]) {
-      expect(() => new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, threshold })).toThrow(
-        /threshold must be a finite number between 0 and 1/,
-      );
-    }
-    expect(() =>
-      new Firewall({
-        apiKey: "sk-test",
-        apiUrl: TEST_API_URL,
-        hookThresholds: { [HookLabel.USER_INPUT]: Number.NaN },
-      }),
-    ).toThrow(/hookThresholds/);
   });
 
   it("rejects invalid timeoutMs", () => {
@@ -128,7 +117,7 @@ describe("Firewall.classify", () => {
     const { calls } = mockFetch([{ status: 200, body: { prediction: "BENIGN", score: 0.12 } }]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     const result = await fw.classify("hello world");
-    expect(result).toEqual({ prediction: "BENIGN", score: 0.12 });
+    expect(result).toEqual({ prediction: "BENIGN", score: 0.12, threshold: 0.5 });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(TEST_API_URL);
     expect(calls[0]!.init.method).toBe("POST");
@@ -136,7 +125,7 @@ describe("Firewall.classify", () => {
     const headers = calls[0]!.init.headers as Record<string, string>;
     expect(headers["x-api-key"]).toBe("sk-test");
     expect(headers["content-type"]).toBe("application/json");
-    expect(calls[0]!.body).toEqual({ text: "hello world" });
+    expect(calls[0]!.body).toEqual({ text: "hello world", threshold: 0.5 });
   });
 
   it("decodes optional Sapphire outcome fields", async () => {
@@ -159,6 +148,7 @@ describe("Firewall.classify", () => {
     expect(result).toEqual({
       prediction: "MALICIOUS",
       score: 0.91,
+      threshold: 0.5,
       primaryOutcome: "secret_exposure",
       outcomeScores: { secret_exposure: 0.8 },
       detectorScores: { secret_exposure: 1.0 },
@@ -176,6 +166,7 @@ describe("Firewall.classify", () => {
     expect(result.prediction).toBe("MALICIOUS");
     expect(calls[0]!.body).toEqual({
       text: "suspicious email body",
+      threshold: 0.5,
       hook: "tool_response",
       tool_name: "read_email",
     });
@@ -193,6 +184,7 @@ describe("Firewall.classify", () => {
     });
     expect(calls[0]!.body).toEqual({
       text: "hello",
+      threshold: 0.5,
       hook: "user_input",
       metadata: {
         run_id: "run-123",
@@ -281,7 +273,9 @@ describe("Firewall.classifyBatch", () => {
     expect(results).toHaveLength(2);
     expect(results[0]!.prediction).toBe("BENIGN");
     expect(results[1]!.prediction).toBe("MALICIOUS");
-    expect(calls[0]!.body).toEqual({ texts: ["a", "b"] });
+    expect(results[0]!.threshold).toBe(adaptiveThreshold(2));
+    expect(results[1]!.threshold).toBe(adaptiveThreshold(2));
+    expect(calls[0]!.body).toEqual({ texts: ["a", "b"], threshold: adaptiveThreshold(2) });
   });
 
   it("sanitizes lone surrogates before sending batch payloads", async () => {
@@ -298,7 +292,7 @@ describe("Firewall.classifyBatch", () => {
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     await fw.classifyBatch([`bad ${"\ud83d"} value`, `ok 😀 ${"\ude00"}`]);
-    expect(calls[0]!.body).toEqual({ texts: ["bad  value", "ok 😀 "] });
+    expect(calls[0]!.body).toEqual({ texts: ["bad  value", "ok 😀 "], threshold: adaptiveThreshold(2) });
   });
 
   it("decodes optional Sapphire batch outcome fields", async () => {
@@ -323,10 +317,11 @@ describe("Firewall.classifyBatch", () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     const results = await fw.classifyBatch(["a", "b"]);
 
-    expect(results[0]).toEqual({ prediction: "BENIGN", score: 0.01 });
+    expect(results[0]).toEqual({ prediction: "BENIGN", score: 0.01, threshold: adaptiveThreshold(2) });
     expect(results[1]).toEqual({
       prediction: "MALICIOUS",
       score: 0.9,
+      threshold: adaptiveThreshold(2),
       primaryOutcome: "system_compromise",
       outcomeScores: { system_compromise: 0.92 },
       detectorScores: { information_disclosure: 0.85 },
@@ -345,6 +340,7 @@ describe("Firewall.classifyBatch", () => {
     });
     expect(calls[0]!.body).toEqual({
       texts: ["a"],
+      threshold: 0.5,
       hooks: ["tool_response"],
       tool_names: ["read_file"],
     });
@@ -368,6 +364,7 @@ describe("Firewall.classifyBatch", () => {
     });
     expect(calls[0]!.body).toEqual({
       texts: ["a", "b"],
+      threshold: adaptiveThreshold(2),
       metadata: [{ run_id: "run-a" }, null],
     });
   });
@@ -383,8 +380,38 @@ describe("Firewall.classifyBatch", () => {
     await fw.classifyBatch(["a", "b"], { toolNames: ["read_file", undefined] });
     expect(calls[0]!.body).toEqual({
       texts: ["a", "b"],
+      threshold: adaptiveThreshold(2),
       tool_names: ["read_file", null],
     });
+  });
+
+  it("adapts batch threshold by batch size and caps at 10 texts", async () => {
+    const { calls } = mockFetch([
+      {
+        status: 200,
+        body: {
+          predictions: Array.from({ length: 5 }, () => ({ prediction: "BENIGN", score: 0 })),
+        },
+      },
+      {
+        status: 200,
+        body: {
+          predictions: Array.from({ length: 10 }, () => ({ prediction: "BENIGN", score: 0 })),
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    await fw.classifyBatch(["a", "b", "c", "d", "e"]);
+    await fw.classifyBatch(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
+    expect((calls[0]!.body as { threshold: number }).threshold).toBeCloseTo(adaptiveThreshold(5));
+    expect((calls[1]!.body as { threshold: number }).threshold).toBe(0.9);
+  });
+
+  it("rejects empty batches before sending", async () => {
+    const { calls } = mockFetch([{ status: 200, body: { predictions: [] } }]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    await expect(fw.classifyBatch([])).rejects.toThrow(/texts must not be empty/);
+    expect(calls).toHaveLength(0);
   });
 
   it("rejects hooks length mismatches before sending", async () => {
@@ -415,24 +442,6 @@ describe("Firewall.classifyBatch", () => {
   });
 });
 
-describe("Firewall.effectiveThreshold", () => {
-  it("returns global threshold when hook is undefined", () => {
-    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, threshold: 0.7 });
-    expect(fw.effectiveThreshold(undefined)).toBe(0.7);
-  });
-
-  it("returns per-hook override when set", () => {
-    const fw = new Firewall({
-      apiKey: "sk-test",
-      apiUrl: TEST_API_URL,
-      threshold: 0.7,
-      hookThresholds: { [HookLabel.TOOL_RESPONSE]: 0.25 },
-    });
-    expect(fw.effectiveThreshold(HookLabel.TOOL_RESPONSE)).toBe(0.25);
-    expect(fw.effectiveThreshold(HookLabel.USER_INPUT)).toBe(0.7);
-  });
-});
-
 describe("Firewall.classify — chunking", () => {
   let originalFetch: typeof fetch;
 
@@ -449,7 +458,7 @@ describe("Firewall.classify — chunking", () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     await fw.classify("short");
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.body).toEqual({ text: "short" });
+    expect(calls[0]!.body).toEqual({ text: "short", threshold: 0.5 });
   });
 
   it("fans out chunk requests and aggregates the max score across chunks", async () => {
@@ -473,10 +482,12 @@ describe("Firewall.classify — chunking", () => {
     const result = await fw.classify(longText);
     expect(result.prediction).toBe("MALICIOUS");
     expect(result.score).toBe(0.95);
+    expect(result.threshold).toBeCloseTo(adaptiveThreshold(3));
     expect(calls).toHaveLength(3);
     for (const call of calls) {
       expect(call.body).toHaveProperty("text");
       expect(call.body).not.toHaveProperty("texts");
+      expect((call.body as { threshold: number }).threshold).toBeCloseTo(adaptiveThreshold(3));
     }
   });
 
@@ -496,7 +507,7 @@ describe("Firewall.classify — chunking", () => {
     await fw.classify(text, { hook: HookLabel.TOOL_RESPONSE });
     expect(calls.length).toBeGreaterThan(1);
     for (const call of calls) {
-      expect(call.body).toMatchObject({ hook: "tool_response" });
+      expect(call.body).toMatchObject({ hook: "tool_response", threshold: adaptiveThreshold(calls.length) });
       expect(call.body).not.toHaveProperty("texts");
     }
   });
@@ -518,7 +529,7 @@ describe("Firewall.classify — chunking", () => {
     await fw.classify(text, { hook: HookLabel.TOOL_RESPONSE, metadata });
     expect(calls.length).toBeGreaterThan(1);
     for (const call of calls) {
-      expect(call.body).toMatchObject({ hook: "tool_response", metadata });
+      expect(call.body).toMatchObject({ hook: "tool_response", metadata, threshold: adaptiveThreshold(calls.length) });
       expect(call.body).not.toHaveProperty("texts");
     }
   });

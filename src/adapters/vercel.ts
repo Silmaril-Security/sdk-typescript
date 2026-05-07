@@ -5,7 +5,6 @@ import type { Firewall } from "../firewall.js";
 import { PromptBlockedException } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
 import type { BlockResult, MiddlewareOptions } from "../types.js";
-import { validateHookThresholds, validateOptionalThreshold } from "../validation.js";
 
 interface VercelContentPart {
   type?: string;
@@ -129,19 +128,7 @@ export function createMiddleware(
 ): FirewallMiddleware {
   const scanInput = options.scanInput ?? true;
   const scanOutput = options.scanOutput ?? false;
-  const overrideThreshold = validateOptionalThreshold("threshold", options.threshold);
-  const overrideHookThresholds = validateHookThresholds("hookThresholds", options.hookThresholds);
   const shadowMode = options.shadowMode ?? firewall.shadowMode;
-
-  const effectiveThreshold = (label: HookLabel): number => {
-    if (overrideHookThresholds[label] !== undefined) {
-      return overrideHookThresholds[label] as number;
-    }
-    if (firewall.hookThresholds[label] !== undefined) {
-      return firewall.hookThresholds[label] as number;
-    }
-    return overrideThreshold ?? firewall.threshold;
-  };
 
   const classifyOrBlock = async (
     text: string,
@@ -155,7 +142,7 @@ export function createMiddleware(
       text,
       toolName !== undefined ? { hook, toolName } : { hook },
     );
-    const threshold = effectiveThreshold(hook);
+    const threshold = result.threshold;
     const blocked = result.score >= threshold;
     options.onClassify?.({
       hook,

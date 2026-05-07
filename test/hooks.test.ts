@@ -3,7 +3,6 @@
 import { describe, expect, it } from "vitest";
 import {
   ALL_HOOKS,
-  DEFAULT_HOOK_THRESHOLDS,
   DEFAULT_HOOKS,
   FIREWALL_HOOK_TO_LABEL,
   FirewallHook,
@@ -75,16 +74,6 @@ describe("FIREWALL_HOOK_TO_LABEL", () => {
     expect(FIREWALL_HOOK_TO_LABEL[FirewallHook.TOOL_END]).toBe(HookLabel.TOOL_RESPONSE);
     expect(FIREWALL_HOOK_TO_LABEL[FirewallHook.RETRIEVER_END]).toBe(HookLabel.TOOL_RESPONSE);
     expect(FIREWALL_HOOK_TO_LABEL[FirewallHook.LLM_END]).toBe(HookLabel.LLM_OUTPUT);
-  });
-});
-
-describe("DEFAULT_HOOK_THRESHOLDS", () => {
-  it("match Python values", () => {
-    expect(DEFAULT_HOOK_THRESHOLDS[HookLabel.USER_INPUT]).toBe(0.5);
-    expect(DEFAULT_HOOK_THRESHOLDS[HookLabel.SYSTEM_PROMPT]).toBe(0.5);
-    expect(DEFAULT_HOOK_THRESHOLDS[HookLabel.TOOL_CALL]).toBe(0.5);
-    expect(DEFAULT_HOOK_THRESHOLDS[HookLabel.TOOL_RESPONSE]).toBe(0.5);
-    expect(DEFAULT_HOOK_THRESHOLDS[HookLabel.LLM_OUTPUT]).toBe(0.5);
   });
 });
 

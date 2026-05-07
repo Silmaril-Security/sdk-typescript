@@ -6,7 +6,6 @@ import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
 import { chunkText, sanitizeText } from "./chunking.js";
 import { SilmarilApiError } from "./exceptions.js";
-import type { HookLabel } from "./hooks.js";
 import type {
   BlockResult,
   ClassifyBatchOptions,
@@ -17,9 +16,10 @@ import type {
   MiddlewareOptions,
   Prediction,
 } from "./types.js";
-import { validateHookThresholds, validateThreshold } from "./validation.js";
 
-export const DEFAULT_THRESHOLD = 0.5;
+export const BASE_THRESHOLD = 0.5;
+export const TARGET_SEQUENCE_FPR = 0.01;
+export const MAX_ADAPTIVE_THRESHOLD = 0.9;
 export const DEFAULT_TIMEOUT_MS = 10_000;
 export const DEFAULT_CHUNK_CONCURRENCY = 8;
 const DEFAULT_MAX_RETRIES = 5;
@@ -28,6 +28,7 @@ const MAX_ERROR_BODY_BYTES = 1 << 16;
 
 interface SingleClassifyPayload {
   text: string;
+  threshold: number;
   hook?: string;
   tool_name?: string;
   metadata?: ClassificationMetadata;
@@ -35,6 +36,7 @@ interface SingleClassifyPayload {
 
 interface BatchClassifyPayload {
   texts: readonly string[];
+  threshold: number;
   hooks?: readonly string[];
   tool_names?: readonly (string | null)[];
   metadata?: readonly (ClassificationMetadata | null)[];
@@ -53,10 +55,26 @@ interface BatchClassifyResponse {
   predictions: readonly SingleClassifyResponse[];
 }
 
-function blockResultFromResponse(data: SingleClassifyResponse): BlockResult {
+export function adaptiveThreshold(scoringOpportunityCount: number): number {
+  if (!Number.isInteger(scoringOpportunityCount) || scoringOpportunityCount < 1) {
+    throw new Error(
+      `Firewall: scoringOpportunityCount must be an integer >= 1, got ${scoringOpportunityCount}`,
+    );
+  }
+  if (scoringOpportunityCount === 1) {
+    return BASE_THRESHOLD;
+  }
+  const targetChunkFpr = 1 - Math.pow(1 - TARGET_SEQUENCE_FPR, 1 / scoringOpportunityCount);
+  const oddsRatio = TARGET_SEQUENCE_FPR / targetChunkFpr;
+  const rawThreshold = oddsRatio / (1 + oddsRatio);
+  return Math.min(rawThreshold, MAX_ADAPTIVE_THRESHOLD);
+}
+
+function blockResultFromResponse(data: SingleClassifyResponse, threshold: number): BlockResult {
   const result: {
     prediction: Prediction;
     score: number;
+    threshold: number;
     primaryOutcome?: string;
     outcomeScores?: Readonly<Record<string, number>>;
     detectorScores?: Readonly<Record<string, number>>;
@@ -64,6 +82,7 @@ function blockResultFromResponse(data: SingleClassifyResponse): BlockResult {
   } = {
     prediction: data.prediction,
     score: Number(data.score),
+    threshold,
   };
   if (data.primary_outcome !== undefined) {
     result.primaryOutcome = data.primary_outcome;
@@ -161,10 +180,8 @@ async function mapWithConcurrency<T, R>(
 export class Firewall {
   readonly apiKey: string;
   readonly apiUrl: string;
-  readonly threshold: number;
   readonly timeoutMs: number;
   readonly chunkConcurrency: number;
-  readonly hookThresholds: Readonly<Partial<Record<HookLabel, number>>>;
   readonly shadowMode: boolean;
 
   private readonly headers: Readonly<Record<string, string>>;
@@ -178,7 +195,6 @@ export class Firewall {
     }
     this.apiKey = options.apiKey;
     this.apiUrl = options.apiUrl;
-    this.threshold = validateThreshold("threshold", options.threshold ?? DEFAULT_THRESHOLD);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (typeof this.timeoutMs !== "number" || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 0) {
       throw new Error(`Firewall: timeoutMs must be a finite non-negative number, got ${this.timeoutMs}`);
@@ -189,7 +205,6 @@ export class Firewall {
         `Firewall: chunkConcurrency must be an integer >= 1, got ${this.chunkConcurrency}`,
       );
     }
-    this.hookThresholds = Object.freeze(validateHookThresholds("hookThresholds", options.hookThresholds));
     this.shadowMode = options.shadowMode ?? false;
     this.headers = Object.freeze({
       "x-api-key": this.apiKey,
@@ -199,11 +214,12 @@ export class Firewall {
 
   async classify(text: string, options: ClassifyOptions = {}): Promise<BlockResult> {
     const chunks = chunkText(text);
+    const threshold = adaptiveThreshold(chunks.length);
     if (chunks.length === 1) {
-      return this.classifySingleChunk(chunks[0]!, options);
+      return this.classifySingleChunk(chunks[0]!, options, threshold);
     }
     const results = await mapWithConcurrency(chunks, this.chunkConcurrency, (chunk) =>
-      this.classifySingleChunk(chunk, options),
+      this.classifySingleChunk(chunk, options, threshold),
     );
     return results.reduce((best, r) => (r.score > best.score ? r : best));
   }
@@ -212,6 +228,9 @@ export class Firewall {
     texts: readonly string[],
     options: ClassifyBatchOptions = {},
   ): Promise<BlockResult[]> {
+    if (texts.length === 0) {
+      throw new Error("Firewall: texts must not be empty");
+    }
     if (options.hooks !== undefined && options.hooks.length !== texts.length) {
       throw new Error(
         `Firewall: hooks length ${options.hooks.length} does not match texts length ${texts.length}`,
@@ -228,7 +247,11 @@ export class Firewall {
       );
     }
 
-    const payload: BatchClassifyPayload = { texts: texts.map((text) => sanitizeText(text)) };
+    const threshold = adaptiveThreshold(texts.length);
+    const payload: BatchClassifyPayload = {
+      texts: texts.map((text) => sanitizeText(text)),
+      threshold,
+    };
     if (options.hooks && options.hooks.length > 0) {
       payload.hooks = options.hooks.map((h) => String(h));
     }
@@ -239,7 +262,7 @@ export class Firewall {
       payload.metadata = options.metadata.map((m) => (m === undefined ? null : m));
     }
     const data = await this.postWithRetry<BatchClassifyResponse>(payload);
-    return data.predictions.map((p) => blockResultFromResponse(p));
+    return data.predictions.map((p) => blockResultFromResponse(p, threshold));
   }
 
   asLangChainHandler(options: LangChainAdapterOptions = {}): Promise<BaseCallbackHandler> {
@@ -248,13 +271,6 @@ export class Firewall {
 
   asMiddleware(options: MiddlewareOptions = {}): FirewallMiddleware {
     return createMiddleware(this, options);
-  }
-
-  effectiveThreshold(hook: HookLabel | undefined): number {
-    if (hook === undefined) {
-      return this.threshold;
-    }
-    return this.hookThresholds[hook] ?? this.threshold;
   }
 
   private async postWithRetry<T>(
@@ -289,8 +305,9 @@ export class Firewall {
   private async classifySingleChunk(
     text: string,
     options: ClassifyOptions,
+    threshold: number,
   ): Promise<BlockResult> {
-    const payload: SingleClassifyPayload = { text };
+    const payload: SingleClassifyPayload = { text, threshold };
     if (options.hook !== undefined) {
       payload.hook = options.hook;
     }
@@ -301,6 +318,6 @@ export class Firewall {
       payload.metadata = options.metadata;
     }
     const data = await this.postWithRetry<SingleClassifyResponse>(payload);
-    return blockResultFromResponse(data);
+    return blockResultFromResponse(data, threshold);
   }
 }

@@ -11,7 +11,7 @@ interface ClassifyCall {
 }
 
 function makeFirewall(
-  scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number } | Error>,
+  scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number } | Error>,
 ): {
   firewall: Firewall;
   calls: ClassifyCall[];
@@ -20,7 +20,6 @@ function makeFirewall(
   const firewall = new Firewall({
     apiKey: "sk-test",
     apiUrl: "https://api.test.invalid/classify",
-    threshold: 0.5,
   });
   let i = 0;
   firewall.classify = vi.fn(async (text, options) => {
@@ -30,7 +29,7 @@ function makeFirewall(
     if (r instanceof Error) {
       throw r;
     }
-    return Object.freeze({ prediction: r!.prediction, score: r!.score });
+    return Object.freeze({ prediction: r!.prediction, score: r!.score, threshold: r!.threshold ?? 0.5 });
   }) as typeof firewall.classify;
   return { firewall, calls };
 }
@@ -146,15 +145,13 @@ describe("LangChain adapter — input hooks", () => {
     ).rejects.toBeInstanceOf(PromptBlockedException);
   });
 
-  it("applies per-hook threshold override", async () => {
+  it("uses the returned threshold for enforcement", async () => {
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
-      threshold: 0.5,
-      hookThresholds: { [HookLabel.TOOL_RESPONSE]: 0.2 },
     });
     firewall.classify = vi.fn(async () =>
-      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.3 }),
+      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.3, threshold: 0.2 }),
     ) as typeof firewall.classify;
     const handler = (await createLangChainHandler(firewall, { hooks: ALL_HOOKS })) as unknown as {
       handleToolEnd: (
@@ -168,18 +165,6 @@ describe("LangChain adapter — input hooks", () => {
     await expect(
       handler.handleToolEnd("suspicious output", "run-1", undefined, undefined, { name: "read_file" }),
     ).rejects.toBeInstanceOf(PromptBlockedException);
-  });
-
-  it("rejects invalid adapter threshold overrides", async () => {
-    const { firewall } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
-    await expect(createLangChainHandler(firewall, { threshold: Number.NaN })).rejects.toThrow(
-      /threshold must be a finite number between 0 and 1/,
-    );
-    await expect(
-      createLangChainHandler(firewall, {
-        hookThresholds: { [HookLabel.TOOL_RESPONSE]: Number.POSITIVE_INFINITY },
-      }),
-    ).rejects.toThrow(/hookThresholds/);
   });
 });
 
@@ -358,14 +343,13 @@ describe("LangChain adapter — shadow mode", () => {
   });
 
   function makeShadowFirewall(
-    scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number } | Error>,
+    scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number } | Error>,
     shadowMode: boolean,
   ): { firewall: Firewall; calls: ClassifyCall[] } {
     const calls: ClassifyCall[] = [];
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
-      threshold: 0.5,
       shadowMode,
     });
     let i = 0;
@@ -376,7 +360,7 @@ describe("LangChain adapter — shadow mode", () => {
       if (r instanceof Error) {
         throw r;
       }
-      return Object.freeze({ prediction: r!.prediction, score: r!.score });
+      return Object.freeze({ prediction: r!.prediction, score: r!.score, threshold: r!.threshold ?? 0.5 });
     }) as typeof firewall.classify;
     return { firewall, calls };
   }

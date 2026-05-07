@@ -18,8 +18,8 @@ This SDK provides the low-level TypeScript interface for that workflow:
 - Classify user input, tool calls, tool responses, model output, or system
   prompt content.
 - Preserve hook and tool-name context for more accurate decisions.
-- Configure default and per-hook thresholds for adapter enforcement, with
-  shadow mode for observation-only rollout.
+- Enforce automatic adaptive thresholds in adapters, with shadow mode for
+  observation-only rollout.
 - Chunk long inputs consistently before they reach the API.
 - Retry API rate-limit responses.
 - Optionally attach the firewall to Vercel AI SDK middleware and LangChain.js
@@ -36,7 +36,7 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.1.4
+npm install @silmaril-security/sdk@0.3.0
 ```
 
 Requires Node 18 or later.
@@ -96,12 +96,7 @@ const suspiciousResult = await fw.classify(
   { hook: HookLabel.USER_INPUT },
 );
 
-if (suspiciousResult.score >= fw.effectiveThreshold(HookLabel.USER_INPUT)) {
-  console.log(
-    `would block: score=${suspiciousResult.score.toFixed(4)} ` +
-      `threshold=${fw.effectiveThreshold(HookLabel.USER_INPUT).toFixed(4)}`,
-  );
-}
+console.log(`suspicious input: ${suspiciousResult.prediction} ${suspiciousResult.score.toFixed(4)}`);
 
 const toolResult = await fw.classify(suspiciousToolOutput, {
   hook: HookLabel.TOOL_RESPONSE,
@@ -111,10 +106,10 @@ const toolResult = await fw.classify(suspiciousToolOutput, {
 console.log(`tool output: ${toolResult.prediction} ${toolResult.score.toFixed(4)}`);
 ```
 
-`classify()` and `classifyBatch()` return the server's prediction and score.
-They do not throw on malicious verdicts. The Vercel AI SDK and LangChain.js
-adapters apply thresholds and throw `PromptBlockedException` when enforcement is
-enabled.
+`classify()` and `classifyBatch()` return the server's prediction, score, and
+internally applied threshold. Direct calls do not throw on malicious verdicts.
+The Vercel AI SDK and LangChain.js adapters use `result.threshold` and throw
+`PromptBlockedException` when enforcement is enabled.
 
 ## Options
 
@@ -122,31 +117,27 @@ enabled.
 interface FirewallOptions {
   apiKey: string;                                     // required
   apiUrl: string;                                     // required
-  threshold?: number;                                 // default: 0.5
   timeoutMs?: number;                                 // default: 10000 ms
   chunkConcurrency?: number;                          // default: 8
-  hookThresholds?: Partial<Record<HookLabel, number>>;
   shadowMode?: boolean;                               // adapter observation mode
 }
 ```
 
-`threshold` and `hookThresholds` are used by adapters when deciding whether a
-classification should block. Threshold values must be finite numbers in `[0, 1]`.
-Direct `classify()` and `classifyBatch()` calls return scores so callers can
-enforce their own policy.
-
-To set a threshold:
-
-```ts
-const fw = new Firewall({
-  apiKey,
-  apiUrl,
-  threshold: 0.0,
-});
-```
-
 The SDK uses native `fetch`, `AbortSignal.timeout`, and JSON request bodies with
 `x-api-key` and `content-type` headers.
+
+## Automatic Thresholding
+
+Customers do not tune score thresholds. Short inputs use the base threshold
+`0.5`, which corresponds to the SDK's default single-chunk operating point.
+When a call creates more scoring opportunities, the SDK raises the internal
+threshold before sending requests to `/classify`: 2 chunks use about `0.6661`,
+5 chunks use about `0.8328`, and 10 or more opportunities are capped at `0.9`.
+
+For `classify()`, the scoring-opportunity count is the number of generated
+chunks. For `classifyBatch()`, it is the number of texts in the batch. The
+applied value remains available on `BlockResult.threshold` and
+`PromptBlockedException.threshold` as diagnostic metadata.
 
 ## Shadow Mode
 
@@ -198,7 +189,7 @@ await fw.asLangChainHandler({
 ```
 
 `ClassifyEvent` includes `hook`, `toolName`, `text`, `result`, `blocked`, and
-`shadowMode`. `blocked` is computed from `result.score >= effectiveThreshold`.
+`shadowMode`. `blocked` is computed from `result.score >= result.threshold`.
 Direct `classify()` and `classifyBatch()` calls never throw on verdicts and are
 unaffected by shadow mode.
 
@@ -212,9 +203,6 @@ HookLabel.TOOL_RESPONSE;  // "tool_response"
 HookLabel.LLM_OUTPUT;     // "llm_output"
 HookLabel.UNKNOWN;        // "unknown"
 ```
-
-`{ ...DEFAULT_HOOK_THRESHOLDS }` returns a fresh mutable copy of the default
-score threshold map.
 
 `prependHook()` and `prependToolName()` are legacy helpers for manual
 text-prefix integrations. `classify()` and `classifyBatch()` send hook and tool
@@ -264,7 +252,14 @@ console.log(`classified ${results.length} items`);
 
 Batch requests preserve result order and can carry per-item hooks, tool names,
 and metadata. Hook, tool-name, and metadata arrays must match the number of
-texts.
+texts. Each batch carries one internal threshold based on batch size.
+
+## Migration Notes
+
+Version `0.3.0` removes customer-facing `threshold` and `hookThresholds`
+configuration from the client, Vercel middleware, and LangChain adapter.
+Existing hook metadata, shadow mode, result threshold diagnostics, and typed
+blocking exceptions remain available.
 
 ## Vercel AI SDK Middleware
 

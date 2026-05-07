@@ -11,37 +11,24 @@ interface ClassifyCall {
 }
 
 function makeFirewall(
-  scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number }>,
+  scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number }>,
 ): { firewall: Firewall; calls: ClassifyCall[] } {
   const calls: ClassifyCall[] = [];
   const firewall = new Firewall({
     apiKey: "sk-test",
     apiUrl: "https://api.test.invalid/classify",
-    threshold: 0.5,
   });
   let i = 0;
   firewall.classify = vi.fn(async (text, options) => {
     calls.push({ text, hook: options?.hook, toolName: options?.toolName });
     const r = scores[Math.min(i, scores.length - 1)];
     i++;
-    return Object.freeze({ prediction: r!.prediction, score: r!.score });
+    return Object.freeze({ prediction: r!.prediction, score: r!.score, threshold: r!.threshold ?? 0.5 });
   }) as typeof firewall.classify;
   return { firewall, calls };
 }
 
 describe("Vercel middleware — wrapGenerate", () => {
-  it("rejects invalid middleware threshold overrides", () => {
-    const { firewall } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
-    expect(() => createMiddleware(firewall, { threshold: Number.NaN })).toThrow(
-      /threshold must be a finite number between 0 and 1/,
-    );
-    expect(() =>
-      createMiddleware(firewall, {
-        hookThresholds: { [HookLabel.USER_INPUT]: Number.POSITIVE_INFINITY },
-      }),
-    ).toThrow(/hookThresholds/);
-  });
-
   it("classifies the prompt before calling doGenerate (benign passes)", async () => {
     const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
     const middleware = createMiddleware(firewall);
@@ -163,18 +150,15 @@ describe("Vercel middleware — wrapGenerate", () => {
     expect(onBlocked.mock.calls[0]![0]).toBeInstanceOf(PromptBlockedException);
   });
 
-  it("per-hook threshold override applies", async () => {
+  it("uses the returned threshold for enforcement", async () => {
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
-      threshold: 0.9,
     });
     firewall.classify = vi.fn(async () =>
-      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.5 }),
+      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.5, threshold: 0.3 }),
     ) as typeof firewall.classify;
-    const middleware = createMiddleware(firewall, {
-      hookThresholds: { [HookLabel.USER_INPUT]: 0.3 },
-    });
+    const middleware = createMiddleware(firewall);
     await expect(
       middleware.wrapGenerate({
         params: { prompt: [{ role: "user", content: "borderline" }] },
@@ -452,115 +436,15 @@ describe("Vercel middleware — wrapStream", () => {
   });
 });
 
-describe("Vercel middleware — threshold precedence matrix", () => {
-  // Scored at 0.6: between firewall global (0.5) and a per-hook override (0.7).
-  // Middleware-level overrides win over both firewall.hookThresholds and
-  // firewall.threshold. Covers one test case per HookLabel that the middleware
-  // routes.
-
-  async function runUserInput(
-    middlewareOverrides: Parameters<ReturnType<typeof makeFirewall>["firewall"]["asMiddleware"]>[0],
-  ): Promise<unknown> {
-    const { firewall } = makeFirewall([{ prediction: "MALICIOUS", score: 0.6 }]);
-    const middleware = createMiddleware(firewall, middlewareOverrides ?? {});
-    return middleware.wrapGenerate({
-      params: { prompt: [{ role: "user", content: "hi" }] },
-      doGenerate: vi.fn(async () => ({ text: "" })),
-    });
-  }
-
-  it("middleware hookThresholds override firewall.hookThresholds for USER_INPUT", async () => {
-    // threshold 0.7 > score 0.6 → pass. Without the override we'd hit the
-    // firewall's 0.4, which would block.
-    const firewall = new Firewall({
-      apiKey: "sk-test",
-      apiUrl: "https://api.test.invalid/classify",
-      threshold: 0.5,
-      hookThresholds: { [HookLabel.USER_INPUT]: 0.4 },
-    });
-    firewall.classify = vi.fn(async () =>
-      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.6 }),
-    ) as typeof firewall.classify;
-    const middleware = createMiddleware(firewall, {
-      hookThresholds: { [HookLabel.USER_INPUT]: 0.7 },
-    });
-    await expect(
-      middleware.wrapGenerate({
-        params: { prompt: [{ role: "user", content: "hi" }] },
-        doGenerate: vi.fn(async () => ({ text: "ok" })),
-      }),
-    ).resolves.toMatchObject({ text: "ok" });
-  });
-
-  it("middleware threshold overrides firewall threshold when no per-hook override is set", async () => {
-    await expect(runUserInput({ threshold: 0.7 })).resolves.toBeDefined();
-  });
-
-  it("middleware hookThresholds override for TOOL_RESPONSE", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "MALICIOUS", score: 0.6 }]);
-    const middleware = createMiddleware(firewall, {
-      hookThresholds: { [HookLabel.TOOL_RESPONSE]: 0.7 },
-    });
-    await middleware.wrapGenerate({
-      params: {
-        prompt: [
-          {
-            role: "tool",
-            content: [{ type: "tool-result", toolName: "read_file", result: "data" }],
-          },
-        ],
-      },
-      doGenerate: vi.fn(async () => ({ text: "ok" })),
-    });
-    expect(calls[0]!.hook).toBe(HookLabel.TOOL_RESPONSE);
-  });
-
-  it("middleware hookThresholds override for TOOL_CALL", async () => {
-    const { firewall, calls } = makeFirewall([
-      { prediction: "BENIGN", score: 0 }, // user_input
-      { prediction: "MALICIOUS", score: 0.6 }, // tool_call
-    ]);
-    const middleware = createMiddleware(firewall, {
-      scanToolCalls: true,
-      hookThresholds: { [HookLabel.TOOL_CALL]: 0.7 },
-    });
-    await middleware.wrapGenerate({
-      params: { prompt: [{ role: "user", content: "do it" }] },
-      doGenerate: vi.fn(async () => ({
-        text: "",
-        toolCalls: [{ toolName: "read_file", args: { path: "/etc/passwd" } }],
-      })),
-    });
-    expect(calls.some((c) => c.hook === HookLabel.TOOL_CALL)).toBe(true);
-  });
-
-  it("middleware hookThresholds override for LLM_OUTPUT", async () => {
-    const { firewall, calls } = makeFirewall([
-      { prediction: "BENIGN", score: 0 }, // user_input
-      { prediction: "MALICIOUS", score: 0.6 }, // llm_output
-    ]);
-    const middleware = createMiddleware(firewall, {
-      scanOutput: true,
-      hookThresholds: { [HookLabel.LLM_OUTPUT]: 0.7 },
-    });
-    await middleware.wrapGenerate({
-      params: { prompt: [{ role: "user", content: "hi" }] },
-      doGenerate: vi.fn(async () => ({ text: "suspicious output" })),
-    });
-    expect(calls.some((c) => c.hook === HookLabel.LLM_OUTPUT)).toBe(true);
-  });
-});
-
 describe("Vercel middleware — shadow mode", () => {
   function makeShadowFirewall(
-    scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number }>,
+    scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number }>,
     shadowMode: boolean,
   ): { firewall: Firewall; calls: ClassifyCall[] } {
     const calls: ClassifyCall[] = [];
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
-      threshold: 0.5,
       shadowMode,
     });
     let i = 0;
@@ -568,7 +452,7 @@ describe("Vercel middleware — shadow mode", () => {
       calls.push({ text, hook: options?.hook, toolName: options?.toolName });
       const r = scores[Math.min(i, scores.length - 1)];
       i++;
-      return Object.freeze({ prediction: r!.prediction, score: r!.score });
+      return Object.freeze({ prediction: r!.prediction, score: r!.score, threshold: r!.threshold ?? 0.5 });
     }) as typeof firewall.classify;
     return { firewall, calls };
   }
