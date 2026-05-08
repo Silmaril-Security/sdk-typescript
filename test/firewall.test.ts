@@ -6,6 +6,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   Firewall,
   HookLabel,
+  MAX_INPUT_CHARS,
   SilmarilApiError,
 } from "../src/index.js";
 import { adaptiveThreshold } from "../src/firewall.js";
@@ -577,7 +578,7 @@ describe("Firewall.classify — chunking", () => {
   it("throws when input exceeds MAX_INPUT_CHARS", async () => {
     mockFetch([{ status: 200, body: { prediction: "BENIGN", score: 0 } }]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    const tooLong = "c".repeat(10_240 * 4 + 1);
+    const tooLong = "c".repeat(MAX_INPUT_CHARS + 1);
     await expect(fw.classify(tooLong)).rejects.toThrow(/tokens.*chars/);
   });
 });

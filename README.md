@@ -36,7 +36,7 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.3.0
+npm install @silmaril-security/sdk@0.3.1
 ```
 
 Requires Node 18 or later.
@@ -219,7 +219,7 @@ All SDK exception types extend `Error` and work with `instanceof`.
 ## Chunking
 
 Long inputs are chunked client-side into 400-token overlapping windows
-(64-token overlap). The maximum input is 10,240 tokens. For `classify()`, chunks
+(64-token overlap). The maximum input is 81,920 tokens. For `classify()`, chunks
 are sent as bounded parallel single-text requests using `chunkConcurrency`
 (default: 8), letting API Gateway and SageMaker distribute work across serving
 instances. The highest score is returned.

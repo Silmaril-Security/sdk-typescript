@@ -31,10 +31,11 @@ function hasLoneSurrogate(text: string): boolean {
 
 describe("chunking constants", () => {
   it("pins Python-compatible token/char budgets", () => {
-    expect(MAX_INPUT_TOKENS).toBe(10_240);
+    expect(MAX_INPUT_TOKENS).toBe(81_920);
     expect(CHUNK_WINDOW).toBe(400);
     expect(CHUNK_OVERLAP).toBe(64);
     expect(MAX_INPUT_CHARS).toBe(MAX_INPUT_TOKENS * 4);
+    expect(MAX_INPUT_CHARS).toBe(327_680);
     expect(CHUNK_WINDOW_CHARS).toBe(CHUNK_WINDOW * 4);
     expect(CHUNK_OVERLAP_CHARS).toBe(CHUNK_OVERLAP * 4);
   });

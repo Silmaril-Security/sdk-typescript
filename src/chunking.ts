@@ -3,7 +3,7 @@
 
 const CHARS_PER_TOKEN = 4;
 
-export const MAX_INPUT_TOKENS = 10_240;
+export const MAX_INPUT_TOKENS = 81_920;
 export const CHUNK_WINDOW = 400;
 export const CHUNK_OVERLAP = 64;
 
