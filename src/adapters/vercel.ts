@@ -2,7 +2,7 @@
 // PROPRIETARY AND CONFIDENTIAL
 
 import type { Firewall } from "../firewall.js";
-import { PromptBlockedException } from "../exceptions.js";
+import { FirewallBlockedException } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
 import type { BlockResult, MiddlewareOptions } from "../types.js";
 
@@ -153,7 +153,7 @@ export function createMiddleware(
       shadowMode,
     });
     if (blocked && !shadowMode) {
-      const err = new PromptBlockedException({
+      const err = new FirewallBlockedException({
         score: result.score,
         threshold,
         promptText: text,
@@ -256,7 +256,7 @@ export function createMiddleware(
             try {
               await classifyOrBlock(buffered, HookLabel.LLM_OUTPUT);
             } catch (err) {
-              if (err instanceof PromptBlockedException) {
+              if (err instanceof FirewallBlockedException) {
                 controller.enqueue({ type: "error", error: err });
                 return;
               }
