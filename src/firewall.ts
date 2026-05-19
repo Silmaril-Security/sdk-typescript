@@ -2,6 +2,7 @@
 // PROPRIETARY AND CONFIDENTIAL
 
 import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
+import { randomUUID } from "node:crypto";
 
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
 import { chunkText, sanitizeText } from "./chunking.js";
@@ -20,6 +21,7 @@ import type {
 export const BASE_THRESHOLD = 0.5;
 export const TARGET_SEQUENCE_FPR = 0.01;
 export const MAX_ADAPTIVE_THRESHOLD = 0.9;
+export const SDK_VERSION = "0.4.0";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 export const DEFAULT_CHUNK_CONCURRENCY = 8;
 const DEFAULT_MAX_RETRIES = 5;
@@ -28,7 +30,6 @@ const MAX_ERROR_BODY_BYTES = 1 << 16;
 
 interface SingleClassifyPayload {
   text: string;
-  threshold: number;
   hook?: string;
   tool_name?: string;
   metadata?: ClassificationMetadata;
@@ -36,7 +37,6 @@ interface SingleClassifyPayload {
 
 interface BatchClassifyPayload {
   texts: readonly string[];
-  threshold: number;
   hooks?: readonly string[];
   tool_names?: readonly (string | null)[];
   metadata?: readonly (ClassificationMetadata | null)[];
@@ -45,6 +45,7 @@ interface BatchClassifyPayload {
 interface SingleClassifyResponse {
   prediction: Prediction;
   score: number;
+  threshold: number;
   primary_outcome?: string;
   outcome_scores?: Record<string, number>;
   detector_scores?: Record<string, number>;
@@ -55,6 +56,7 @@ interface BatchClassifyResponse {
   predictions: readonly SingleClassifyResponse[];
 }
 
+/** @deprecated Thresholds are tenant-owned by the Firewall backend. */
 export function adaptiveThreshold(scoringOpportunityCount: number): number {
   if (!Number.isInteger(scoringOpportunityCount) || scoringOpportunityCount < 1) {
     throw new Error(
@@ -70,7 +72,7 @@ export function adaptiveThreshold(scoringOpportunityCount: number): number {
   return Math.min(rawThreshold, MAX_ADAPTIVE_THRESHOLD);
 }
 
-function blockResultFromResponse(data: SingleClassifyResponse, threshold: number): BlockResult {
+function blockResultFromResponse(data: SingleClassifyResponse): BlockResult {
   const result: {
     prediction: Prediction;
     score: number;
@@ -82,7 +84,7 @@ function blockResultFromResponse(data: SingleClassifyResponse, threshold: number
   } = {
     prediction: data.prediction,
     score: Number(data.score),
-    threshold,
+    threshold: Number(data.threshold),
   };
   if (data.primary_outcome !== undefined) {
     result.primaryOutcome = data.primary_outcome;
@@ -103,6 +105,36 @@ function blockResultFromResponse(data: SingleClassifyResponse, threshold: number
     );
   }
   return Object.freeze(result);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function withSdkMetadata(
+  metadata: ClassificationMetadata | undefined,
+  info: {
+    requestId: string;
+    inputIndex: number;
+    chunkIndex: number;
+    chunkCount: number;
+  },
+): ClassificationMetadata {
+  const payload: Record<string, unknown> = { ...(metadata ?? {}) };
+  const existing = payload.silmaril;
+  if (existing !== undefined && !isRecord(existing)) {
+    throw new Error("Firewall: metadata.silmaril must be an object when provided");
+  }
+  payload.silmaril = {
+    ...(isRecord(existing) ? existing : {}),
+    sdk_language: "typescript",
+    sdk_version: SDK_VERSION,
+    request_id: info.requestId,
+    input_index: info.inputIndex,
+    chunk_index: info.chunkIndex,
+    chunk_count: info.chunkCount,
+  };
+  return payload;
 }
 
 async function readCappedErrorBody(response: Response): Promise<string> {
@@ -214,12 +246,22 @@ export class Firewall {
 
   async classify(text: string, options: ClassifyOptions = {}): Promise<BlockResult> {
     const chunks = chunkText(text);
-    const threshold = adaptiveThreshold(chunks.length);
+    const requestId = options.requestId ?? randomUUID();
     if (chunks.length === 1) {
-      return this.classifySingleChunk(chunks[0]!, options, threshold);
+      return this.classifySingleChunk(chunks[0]!, options, {
+        requestId,
+        inputIndex: 0,
+        chunkIndex: 0,
+        chunkCount: 1,
+      });
     }
-    const results = await mapWithConcurrency(chunks, this.chunkConcurrency, (chunk) =>
-      this.classifySingleChunk(chunk, options, threshold),
+    const results = await mapWithConcurrency(chunks, this.chunkConcurrency, (chunk, index) =>
+      this.classifySingleChunk(chunk, options, {
+        requestId,
+        inputIndex: 0,
+        chunkIndex: index,
+        chunkCount: chunks.length,
+      }),
     );
     return results.reduce((best, r) => (r.score > best.score ? r : best));
   }
@@ -247,10 +289,9 @@ export class Firewall {
       );
     }
 
-    const threshold = adaptiveThreshold(texts.length);
+    const requestId = options.requestId ?? randomUUID();
     const payload: BatchClassifyPayload = {
       texts: texts.map((text) => sanitizeText(text)),
-      threshold,
     };
     if (options.hooks && options.hooks.length > 0) {
       payload.hooks = options.hooks.map((h) => String(h));
@@ -258,11 +299,16 @@ export class Firewall {
     if (options.toolNames && options.toolNames.length > 0) {
       payload.tool_names = options.toolNames.map((t) => (t === undefined ? null : t));
     }
-    if (options.metadata && options.metadata.length > 0) {
-      payload.metadata = options.metadata.map((m) => (m === undefined ? null : m));
-    }
+    payload.metadata = texts.map((_, index) =>
+      withSdkMetadata(options.metadata?.[index], {
+        requestId,
+        inputIndex: index,
+        chunkIndex: 0,
+        chunkCount: 1,
+      }),
+    );
     const data = await this.postWithRetry<BatchClassifyResponse>(payload);
-    return data.predictions.map((p) => blockResultFromResponse(p, threshold));
+    return data.predictions.map((p) => blockResultFromResponse(p));
   }
 
   asLangChainHandler(options: LangChainAdapterOptions = {}): Promise<BaseCallbackHandler> {
@@ -305,19 +351,22 @@ export class Firewall {
   private async classifySingleChunk(
     text: string,
     options: ClassifyOptions,
-    threshold: number,
+    metadataInfo: {
+      requestId: string;
+      inputIndex: number;
+      chunkIndex: number;
+      chunkCount: number;
+    },
   ): Promise<BlockResult> {
-    const payload: SingleClassifyPayload = { text, threshold };
+    const payload: SingleClassifyPayload = { text };
     if (options.hook !== undefined) {
       payload.hook = options.hook;
     }
     if (options.toolName !== undefined) {
       payload.tool_name = options.toolName;
     }
-    if (options.metadata !== undefined) {
-      payload.metadata = options.metadata;
-    }
+    payload.metadata = withSdkMetadata(options.metadata, metadataInfo);
     const data = await this.postWithRetry<SingleClassifyResponse>(payload);
-    return blockResultFromResponse(data, threshold);
+    return blockResultFromResponse(data);
   }
 }

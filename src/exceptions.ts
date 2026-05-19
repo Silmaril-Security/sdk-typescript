@@ -12,7 +12,7 @@ export interface MalformedInputDetails {
   reason?: string;
 }
 
-export class PromptBlockedException extends Error {
+export class FirewallBlockedException extends Error {
   readonly score: number;
   readonly threshold: number;
   readonly promptText: string;
@@ -24,13 +24,13 @@ export class PromptBlockedException extends Error {
     promptText: string;
     runId?: string;
   }) {
-    super(PromptBlockedException.formatMessage(params));
-    this.name = "PromptBlockedException";
+    super(FirewallBlockedException.formatMessage(params));
+    this.name = "FirewallBlockedException";
     this.score = params.score;
     this.threshold = params.threshold;
     this.promptText = params.promptText;
     this.runId = params.runId;
-    Object.setPrototypeOf(this, PromptBlockedException.prototype);
+    Object.setPrototypeOf(this, FirewallBlockedException.prototype);
   }
 
   private static formatMessage(params: {
@@ -43,12 +43,17 @@ export class PromptBlockedException extends Error {
         ? `${params.promptText.slice(0, MAX_PROMPT_DISPLAY_LEN)}...`
         : params.promptText;
     return (
-      `Prompt blocked by Silmaril Firewall ` +
+      `Request blocked by Silmaril Firewall ` +
       `(score=${params.score.toFixed(4)}, threshold=${params.threshold.toFixed(4)}): ` +
       `'${truncated}'`
     );
   }
 }
+
+/** @deprecated Use FirewallBlockedException instead. */
+export const PromptBlockedException = FirewallBlockedException;
+/** @deprecated Use FirewallBlockedException instead. */
+export type PromptBlockedException = FirewallBlockedException;
 
 export class SilmarilApiError extends Error {
   readonly status: number;

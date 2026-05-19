@@ -1,7 +1,11 @@
 // Copyright (c) 2024-2025 Silmaril Security Inc. All rights reserved.
 
 import { describe, expect, it } from "vitest";
-import { PromptBlockedException, SilmarilApiError } from "../src/index.js";
+import {
+  FirewallBlockedException,
+  PromptBlockedException,
+  SilmarilApiError,
+} from "../src/index.js";
 
 describe("SilmarilApiError", () => {
   it("composes a redacted message with status and statusText", () => {
@@ -38,9 +42,9 @@ describe("SilmarilApiError", () => {
   });
 });
 
-describe("PromptBlockedException", () => {
+describe("FirewallBlockedException", () => {
   it("formats score and threshold to 4 decimals", () => {
-    const err = new PromptBlockedException({
+    const err = new FirewallBlockedException({
       score: 0.9876543,
       threshold: 0.5,
       promptText: "hello",
@@ -50,7 +54,7 @@ describe("PromptBlockedException", () => {
   });
 
   it("includes the prompt text verbatim when under the display limit", () => {
-    const err = new PromptBlockedException({
+    const err = new FirewallBlockedException({
       score: 0.9,
       threshold: 0.5,
       promptText: "short prompt",
@@ -60,7 +64,7 @@ describe("PromptBlockedException", () => {
 
   it("truncates prompt text over 100 chars with an ellipsis", () => {
     const longText = "x".repeat(150);
-    const err = new PromptBlockedException({
+    const err = new FirewallBlockedException({
       score: 0.9,
       threshold: 0.5,
       promptText: longText,
@@ -71,7 +75,7 @@ describe("PromptBlockedException", () => {
 
   it("does not truncate exactly at the 100-char boundary", () => {
     const exactText = "y".repeat(100);
-    const err = new PromptBlockedException({
+    const err = new FirewallBlockedException({
       score: 0.9,
       threshold: 0.5,
       promptText: exactText,
@@ -81,7 +85,7 @@ describe("PromptBlockedException", () => {
   });
 
   it("exposes score, threshold, promptText, and runId as readable fields", () => {
-    const err = new PromptBlockedException({
+    const err = new FirewallBlockedException({
       score: 0.7,
       threshold: 0.5,
       promptText: "p",
@@ -91,16 +95,18 @@ describe("PromptBlockedException", () => {
     expect(err.threshold).toBe(0.5);
     expect(err.promptText).toBe("p");
     expect(err.runId).toBe("run-42");
-    expect(err.name).toBe("PromptBlockedException");
+    expect(err.name).toBe("FirewallBlockedException");
   });
 
   it("leaves runId undefined when not provided", () => {
-    const err = new PromptBlockedException({ score: 0.9, threshold: 0.5, promptText: "p" });
+    const err = new FirewallBlockedException({ score: 0.9, threshold: 0.5, promptText: "p" });
     expect(err.runId).toBeUndefined();
   });
 
-  it("remains an instanceof PromptBlockedException and Error", () => {
-    const err = new PromptBlockedException({ score: 0.9, threshold: 0.5, promptText: "p" });
+  it("remains an instanceof FirewallBlockedException, deprecated alias, and Error", () => {
+    const err = new FirewallBlockedException({ score: 0.9, threshold: 0.5, promptText: "p" });
+    expect(PromptBlockedException).toBe(FirewallBlockedException);
+    expect(err).toBeInstanceOf(FirewallBlockedException);
     expect(err).toBeInstanceOf(PromptBlockedException);
     expect(err).toBeInstanceOf(Error);
   });

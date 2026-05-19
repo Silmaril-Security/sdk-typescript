@@ -4,7 +4,7 @@
 import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 
 import type { Firewall } from "../firewall.js";
-import { PromptBlockedException } from "../exceptions.js";
+import { FirewallBlockedException } from "../exceptions.js";
 import {
   FIREWALL_HOOK_TO_LABEL,
   FirewallHook,
@@ -135,7 +135,7 @@ export async function createLangChainHandler(
     const blocked = result.score >= threshold;
     fireOnClassify(hookLabel, text, result, blocked, toolName);
     if (blocked && !shadowMode) {
-      throw new PromptBlockedException({
+      throw new FirewallBlockedException({
         score: result.score,
         threshold,
         promptText: text,

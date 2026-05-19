@@ -18,9 +18,10 @@ This SDK provides the low-level TypeScript interface for that workflow:
 - Classify user input, tool calls, tool responses, model output, or system
   prompt content.
 - Preserve hook and tool-name context for more accurate decisions.
-- Enforce automatic adaptive thresholds in adapters, with shadow mode for
+- Enforce backend-owned adaptive thresholds in adapters, with shadow mode for
   observation-only rollout.
 - Chunk long inputs consistently before they reach the API.
+- Send SDK metadata that lets the Firewall reconstruct chunked payloads.
 - Retry API rate-limit responses.
 - Optionally attach the firewall to Vercel AI SDK middleware and LangChain.js
   callback flows.
@@ -36,14 +37,14 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.3.1
+npm install @silmaril-security/sdk@0.4.0
 ```
 
 Requires Node 18 or later.
 
 The package name and SDK import path are both `@silmaril-security/sdk`, so call
-sites use `Firewall`, `HookLabel`, and `PromptBlockedException` from that
-package.
+sites use `Firewall`, `HookLabel`, and `FirewallBlockedException` from that
+package. `PromptBlockedException` is a deprecated alias.
 
 Optional Vercel AI SDK middleware support:
 
@@ -109,7 +110,7 @@ console.log(`tool output: ${toolResult.prediction} ${toolResult.score.toFixed(4)
 `classify()` and `classifyBatch()` return the server's prediction, score, and
 internally applied threshold. Direct calls do not throw on malicious verdicts.
 The Vercel AI SDK and LangChain.js adapters use `result.threshold` and throw
-`PromptBlockedException` when enforcement is enabled.
+`FirewallBlockedException` when enforcement is enabled.
 
 ## Options
 
@@ -126,24 +127,26 @@ interface FirewallOptions {
 The SDK uses native `fetch`, `AbortSignal.timeout`, and JSON request bodies with
 `x-api-key` and `content-type` headers.
 
-## Automatic Thresholding
+## Backend Thresholding
 
-Customers do not tune score thresholds. Short inputs use the base threshold
-`0.5`, which corresponds to the SDK's default single-chunk operating point.
-When a call creates more scoring opportunities, the SDK raises the internal
-threshold before sending requests to `/classify`: 2 chunks use about `0.6661`,
-5 chunks use about `0.8328`, and 10 or more opportunities are capped at `0.9`.
+Customers do not tune score thresholds in the SDK. Tenant Firewall config owns
+the adaptive threshold schedule. The default backend config is
+`base_threshold=0.5`, `target_sequence_fpr=0.01`, and
+`max_adaptive_threshold=0.9`, which keeps the current schedule: 1 scoring
+opportunity uses `0.5`, 2 use about `0.6661`, 5 use about `0.8328`, and 10 or
+more are capped at `0.9`.
 
-For `classify()`, the scoring-opportunity count is the number of generated
-chunks. For `classifyBatch()`, it is the number of texts in the batch. The
-applied value remains available on `BlockResult.threshold` and
-`PromptBlockedException.threshold` as diagnostic metadata.
+The SDK no longer sends `threshold` in request payloads. It sends chunk
+metadata instead, and the backend combines tenant config, active batch size,
+and chunk count to decide the threshold. The applied value remains available on
+`BlockResult.threshold` and `FirewallBlockedException.threshold` as diagnostic
+metadata.
 
 ## Shadow Mode
 
 The Vercel AI SDK and LangChain.js adapters enforce thresholds by default.
 Shadow mode keeps the same classification and threshold logic but suppresses
-`PromptBlockedException`, so live traffic can continue while telemetry records
+`FirewallBlockedException`, so live traffic can continue while telemetry records
 what would have blocked:
 
 ```ts
@@ -209,10 +212,39 @@ text-prefix integrations. `classify()` and `classifyBatch()` send hook and tool
 metadata as structured JSON fields, so normal callers should use the `hook`,
 `toolName`, `hooks`, and `toolNames` options.
 
+## Request Metadata
+
+Use `metadata` to forward application or integration identifiers to the
+classification API without embedding them in the classified text:
+
+```ts
+await fw.classify(text, {
+  hook: HookLabel.USER_INPUT,
+  metadata: {
+    langgraph: {
+      thread_id: "customer-thread-123",
+      run_id: "langgraph-run-456",
+      message_id: "message-789",
+    },
+  },
+});
+```
+
+The SDK preserves caller metadata and adds a reserved `metadata.silmaril`
+namespace to every request. SDK-controlled fields are `sdk_language`,
+`sdk_version`, `request_id`, `input_index`, `chunk_index`, and `chunk_count`.
+Single unchunked requests use `input_index=0`, `chunk_index=0`, and
+`chunk_count=1`; batches use one metadata object per input; chunked requests
+reuse a single request id across all chunks. If callers provide
+`metadata.silmaril`, it must be an object and SDK-reserved keys are overwritten
+by the SDK.
+
 ## Errors
 
 - `SilmarilApiError`: thrown when the firewall API responds with a non-2xx or redirect status. Carries `status`, `statusText`, a 64 KiB-capped `body`, and any parsed malformed-input diagnostics. The default error message omits the body to keep logs clean.
-- `PromptBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters in enforcement mode when the score meets or exceeds the effective threshold. Carries `score`, `threshold`, `promptText`, and optional `runId`.
+- `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters in enforcement mode when the backend blocks the request. Carries `score`, `threshold`, `promptText`, and optional `runId`.
+
+`PromptBlockedException` remains as a deprecated alias for one release.
 
 All SDK exception types extend `Error` and work with `instanceof`.
 
@@ -252,14 +284,15 @@ console.log(`classified ${results.length} items`);
 
 Batch requests preserve result order and can carry per-item hooks, tool names,
 and metadata. Hook, tool-name, and metadata arrays must match the number of
-texts. Each batch carries one internal threshold based on batch size.
+texts. Each batch carries SDK metadata per item so the backend can apply
+tenant-owned thresholding.
 
 ## Migration Notes
 
-Version `0.3.0` removes customer-facing `threshold` and `hookThresholds`
-configuration from the client, Vercel middleware, and LangChain adapter.
-Existing hook metadata, shadow mode, result threshold diagnostics, and typed
-blocking exceptions remain available.
+Version `0.4.0` moves all threshold decisions to Firewall tenant/backend
+config, adds SDK reconstruction metadata, and renames blocking exceptions to
+`FirewallBlockedException`. The deprecated `PromptBlockedException` alias
+remains available for one release.
 
 ## Vercel AI SDK Middleware
 
@@ -316,8 +349,9 @@ await model.invoke("Hello");
 
 The LangChain handler is fail-open by default: infrastructure errors are logged
 and the LLM call proceeds. Set `failOpen: false` to make API errors bubble up.
-Blocking decisions still throw `PromptBlockedException` unless shadow mode is
-enabled.
+Blocking decisions still throw `FirewallBlockedException` unless shadow mode is
+enabled. `PromptBlockedException` continues to work as a deprecated alias for
+one release.
 
 `asLangChainHandler()` is async because it lazy-loads `@langchain/core` so core
 users do not pay for it.
