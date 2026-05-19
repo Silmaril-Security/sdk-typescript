@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan release
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.plan.outputs.should_release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          cache: npm
+
+      - name: Decide whether to release
+        id: plan
+        run: |
+          set -euo pipefail
+
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.-]+)?$ ]]; then
+            echo "::error::Invalid package version: $version"
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            tag_exists=true
+          else
+            tag_exists=false
+          fi
+
+          if npm view "@silmaril-security/sdk@${version}" version --json >/tmp/npm-version.json 2>/tmp/npm-error.log; then
+            package_exists=true
+          elif grep -q "E404" /tmp/npm-error.log; then
+            package_exists=false
+          else
+            cat /tmp/npm-error.log
+            echo "::error::Unexpected npm response while checking $version."
+            exit 1
+          fi
+
+          if [[ "$tag_exists" == "true" && "$package_exists" == "true" ]]; then
+            should_release=false
+            echo "Version $version is already tagged and published; skipping."
+          elif [[ "$tag_exists" == "false" && "$package_exists" == "false" ]]; then
+            should_release=true
+            echo "Version $version has not been released; publishing."
+          elif [[ "$tag_exists" == "true" ]]; then
+            echo "::error::Tag $tag exists, but npm version $version is missing."
+            exit 1
+          else
+            echo "::error::npm version $version exists, but tag $tag is missing."
+            exit 1
+          fi
+
+          {
+            echo "should_release=${should_release}"
+            echo "version=${version}"
+            echo "tag=${tag}"
+          } >> "$GITHUB_OUTPUT"
+
+  tag:
+    name: Create tag
+    runs-on: ubuntu-latest
+    needs: plan
+    if: needs.plan.outputs.should_release == 'true'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push release tag
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/${TAG}"
+
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: [plan, tag]
+    if: needs.plan.outputs.should_release == 'true'
+    environment: npm
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install latest npm
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack dry run
+        run: npm pack --dry-run
+
+      - name: Publish package
+        run: npm publish --access public
+
+  github_release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs: [plan, publish]
+    if: needs.plan.outputs.should_release == 'true'
+    permissions:
+      contents: write
+    steps:
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping."
+          else
+            gh release create "$TAG" --title "$TAG" --notes "Release $TAG"
+          fi
