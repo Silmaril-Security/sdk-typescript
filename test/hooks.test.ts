@@ -5,11 +5,11 @@ import {
   ALL_HOOKS,
   DEFAULT_HOOKS,
   FIREWALL_HOOK_TO_LABEL,
+  FirewallBlockedException,
   FirewallHook,
   HookLabel,
   INPUT_HOOKS,
   OUTPUT_HOOKS,
-  PromptBlockedException,
   prependHook,
   prependToolName,
   resolveHooks,
@@ -118,14 +118,14 @@ describe("prependToolName", () => {
   });
 });
 
-describe("PromptBlockedException", () => {
+describe("FirewallBlockedException", () => {
   it("formats message with score and threshold", () => {
-    const err = new PromptBlockedException({
+    const err = new FirewallBlockedException({
       score: 0.98765,
       threshold: 0.5,
       promptText: "bad prompt",
     });
-    expect(err.name).toBe("PromptBlockedException");
+    expect(err.name).toBe("FirewallBlockedException");
     expect(err.score).toBe(0.98765);
     expect(err.threshold).toBe(0.5);
     expect(err.message).toContain("score=0.9877");
@@ -135,7 +135,7 @@ describe("PromptBlockedException", () => {
 
   it("truncates long prompt text at 100 chars", () => {
     const longText = "a".repeat(200);
-    const err = new PromptBlockedException({
+    const err = new FirewallBlockedException({
       score: 0.9,
       threshold: 0.5,
       promptText: longText,
@@ -144,9 +144,9 @@ describe("PromptBlockedException", () => {
     expect(err.message).not.toContain("a".repeat(101));
   });
 
-  it("is instanceof Error and PromptBlockedException", () => {
-    const err = new PromptBlockedException({ score: 0.9, threshold: 0.5, promptText: "x" });
+  it("is instanceof Error and FirewallBlockedException", () => {
+    const err = new FirewallBlockedException({ score: 0.9, threshold: 0.5, promptText: "x" });
     expect(err).toBeInstanceOf(Error);
-    expect(err).toBeInstanceOf(PromptBlockedException);
+    expect(err).toBeInstanceOf(FirewallBlockedException);
   });
 });

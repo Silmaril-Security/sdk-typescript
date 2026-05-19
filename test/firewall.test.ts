@@ -9,7 +9,6 @@ import {
   MAX_INPUT_CHARS,
   SilmarilApiError,
 } from "../src/index.js";
-import { adaptiveThreshold } from "../src/firewall.js";
 
 const TEST_API_URL = "https://api.test.invalid/classify";
 const ERROR_BODY_CAP = 1 << 16;
@@ -31,16 +30,54 @@ function mockFetch(responses: Array<{ status: number; body: unknown }>): {
     const idx = Math.min(i, responses.length - 1);
     i++;
     const r = responses[idx]!;
+    const body = withDefaultThresholds(r.body);
     return {
       ok: r.status >= 200 && r.status < 300,
       status: r.status,
       statusText: `status-${r.status}`,
-      json: async () => r.body,
-      text: async () => (typeof r.body === "string" ? r.body : JSON.stringify(r.body)),
+      json: async () => body,
+      text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
     } as unknown as Response;
   };
   globalThis.fetch = impl as unknown as typeof fetch;
   return { calls };
+}
+
+function withDefaultThresholds(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return body;
+  }
+  const data = body as Record<string, unknown>;
+  if (typeof data.prediction === "string" && data.threshold === undefined) {
+    return { ...data, threshold: 0.5 };
+  }
+  if (Array.isArray(data.predictions)) {
+    return {
+      ...data,
+      predictions: data.predictions.map((item) =>
+        item && typeof item === "object" && !Array.isArray(item)
+          ? { threshold: 0.5, ...(item as Record<string, unknown>) }
+          : item,
+      ),
+    };
+  }
+  return body;
+}
+
+function silmarilMetadata(
+  requestId: string,
+  inputIndex: number,
+  chunkIndex: number,
+  chunkCount: number,
+): Record<string, unknown> {
+  return {
+    sdk_language: "typescript",
+    sdk_version: "0.4.0",
+    request_id: requestId,
+    input_index: inputIndex,
+    chunk_index: chunkIndex,
+    chunk_count: chunkCount,
+  };
 }
 
 describe("Firewall constructor", () => {
@@ -54,15 +91,6 @@ describe("Firewall constructor", () => {
     expect(() => new Firewall({ apiKey: "sk-test", apiUrl: "" })).toThrow(
       /apiUrl is required/,
     );
-  });
-
-  it("computes the adaptive threshold schedule", () => {
-    expect(adaptiveThreshold(1)).toBe(0.5);
-    expect(adaptiveThreshold(2)).toBeCloseTo(0.6661087830919008);
-    expect(adaptiveThreshold(5)).toBeCloseTo(0.8327747955407889);
-    expect(adaptiveThreshold(10)).toBe(0.9);
-    expect(adaptiveThreshold(100)).toBe(0.9);
-    expect(() => adaptiveThreshold(0)).toThrow(/scoringOpportunityCount/);
   });
 
   it("applies defaults for timeoutMs", () => {
@@ -117,7 +145,7 @@ describe("Firewall.classify", () => {
   it("POSTs the correct wire shape and returns a BlockResult", async () => {
     const { calls } = mockFetch([{ status: 200, body: { prediction: "BENIGN", score: 0.12 } }]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    const result = await fw.classify("hello world");
+    const result = await fw.classify("hello world", { requestId: "req-single" });
     expect(result).toEqual({ prediction: "BENIGN", score: 0.12, threshold: 0.5 });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(TEST_API_URL);
@@ -126,7 +154,10 @@ describe("Firewall.classify", () => {
     const headers = calls[0]!.init.headers as Record<string, string>;
     expect(headers["x-api-key"]).toBe("sk-test");
     expect(headers["content-type"]).toBe("application/json");
-    expect(calls[0]!.body).toEqual({ text: "hello world", threshold: 0.5 });
+    expect(calls[0]!.body).toEqual({
+      text: "hello world",
+      metadata: { silmaril: silmarilMetadata("req-single", 0, 0, 1) },
+    });
   });
 
   it("decodes optional Sapphire outcome fields", async () => {
@@ -163,13 +194,14 @@ describe("Firewall.classify", () => {
     const result = await fw.classify("suspicious email body", {
       hook: HookLabel.TOOL_RESPONSE,
       toolName: "read_email",
+      requestId: "req-hook",
     });
     expect(result.prediction).toBe("MALICIOUS");
     expect(calls[0]!.body).toEqual({
       text: "suspicious email body",
-      threshold: 0.5,
       hook: "tool_response",
       tool_name: "read_email",
+      metadata: { silmaril: silmarilMetadata("req-hook", 0, 0, 1) },
     });
   });
 
@@ -182,14 +214,15 @@ describe("Firewall.classify", () => {
         run_id: "run-123",
         secret_candidate: "sk-test-secret",
       },
+      requestId: "req-meta",
     });
     expect(calls[0]!.body).toEqual({
       text: "hello",
-      threshold: 0.5,
       hook: "user_input",
       metadata: {
         run_id: "run-123",
         secret_candidate: "sk-test-secret",
+        silmaril: silmarilMetadata("req-meta", 0, 0, 1),
       },
     });
   });
@@ -270,13 +303,19 @@ describe("Firewall.classifyBatch", () => {
       },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    const results = await fw.classifyBatch(["a", "b"]);
+    const results = await fw.classifyBatch(["a", "b"], { requestId: "batch-req" });
     expect(results).toHaveLength(2);
     expect(results[0]!.prediction).toBe("BENIGN");
     expect(results[1]!.prediction).toBe("MALICIOUS");
-    expect(results[0]!.threshold).toBe(adaptiveThreshold(2));
-    expect(results[1]!.threshold).toBe(adaptiveThreshold(2));
-    expect(calls[0]!.body).toEqual({ texts: ["a", "b"], threshold: adaptiveThreshold(2) });
+    expect(results[0]!.threshold).toBe(0.5);
+    expect(results[1]!.threshold).toBe(0.5);
+    expect(calls[0]!.body).toEqual({
+      texts: ["a", "b"],
+      metadata: [
+        { silmaril: silmarilMetadata("batch-req", 0, 0, 1) },
+        { silmaril: silmarilMetadata("batch-req", 1, 0, 1) },
+      ],
+    });
   });
 
   it("sanitizes lone surrogates before sending batch payloads", async () => {
@@ -292,8 +331,16 @@ describe("Firewall.classifyBatch", () => {
       },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    await fw.classifyBatch([`bad ${"\ud83d"} value`, `ok 😀 ${"\ude00"}`]);
-    expect(calls[0]!.body).toEqual({ texts: ["bad  value", "ok 😀 "], threshold: adaptiveThreshold(2) });
+    await fw.classifyBatch([`bad ${"\ud83d"} value`, `ok 😀 ${"\ude00"}`], {
+      requestId: "sanitize-req",
+    });
+    expect(calls[0]!.body).toEqual({
+      texts: ["bad  value", "ok 😀 "],
+      metadata: [
+        { silmaril: silmarilMetadata("sanitize-req", 0, 0, 1) },
+        { silmaril: silmarilMetadata("sanitize-req", 1, 0, 1) },
+      ],
+    });
   });
 
   it("decodes optional Sapphire batch outcome fields", async () => {
@@ -318,11 +365,11 @@ describe("Firewall.classifyBatch", () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     const results = await fw.classifyBatch(["a", "b"]);
 
-    expect(results[0]).toEqual({ prediction: "BENIGN", score: 0.01, threshold: adaptiveThreshold(2) });
+    expect(results[0]).toEqual({ prediction: "BENIGN", score: 0.01, threshold: 0.5 });
     expect(results[1]).toEqual({
       prediction: "MALICIOUS",
       score: 0.9,
-      threshold: adaptiveThreshold(2),
+      threshold: 0.5,
       primaryOutcome: "system_compromise",
       outcomeScores: { system_compromise: 0.92 },
       detectorScores: { information_disclosure: 0.85 },
@@ -338,12 +385,13 @@ describe("Firewall.classifyBatch", () => {
     await fw.classifyBatch(["a"], {
       hooks: [HookLabel.TOOL_RESPONSE],
       toolNames: ["read_file"],
+      requestId: "hooks-req",
     });
     expect(calls[0]!.body).toEqual({
       texts: ["a"],
-      threshold: 0.5,
       hooks: ["tool_response"],
       tool_names: ["read_file"],
+      metadata: [{ silmaril: silmarilMetadata("hooks-req", 0, 0, 1) }],
     });
   });
 
@@ -362,11 +410,14 @@ describe("Firewall.classifyBatch", () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     await fw.classifyBatch(["a", "b"], {
       metadata: [{ run_id: "run-a" }, undefined],
+      requestId: "metadata-req",
     });
     expect(calls[0]!.body).toEqual({
       texts: ["a", "b"],
-      threshold: adaptiveThreshold(2),
-      metadata: [{ run_id: "run-a" }, null],
+      metadata: [
+        { run_id: "run-a", silmaril: silmarilMetadata("metadata-req", 0, 0, 1) },
+        { silmaril: silmarilMetadata("metadata-req", 1, 0, 1) },
+      ],
     });
   });
 
@@ -378,15 +429,21 @@ describe("Firewall.classifyBatch", () => {
       },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    await fw.classifyBatch(["a", "b"], { toolNames: ["read_file", undefined] });
+    await fw.classifyBatch(["a", "b"], {
+      toolNames: ["read_file", undefined],
+      requestId: "tools-req",
+    });
     expect(calls[0]!.body).toEqual({
       texts: ["a", "b"],
-      threshold: adaptiveThreshold(2),
       tool_names: ["read_file", null],
+      metadata: [
+        { silmaril: silmarilMetadata("tools-req", 0, 0, 1) },
+        { silmaril: silmarilMetadata("tools-req", 1, 0, 1) },
+      ],
     });
   });
 
-  it("adapts batch threshold by batch size and caps at 10 texts", async () => {
+  it("does not send thresholds for batch requests", async () => {
     const { calls } = mockFetch([
       {
         status: 200,
@@ -404,8 +461,8 @@ describe("Firewall.classifyBatch", () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     await fw.classifyBatch(["a", "b", "c", "d", "e"]);
     await fw.classifyBatch(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
-    expect((calls[0]!.body as { threshold: number }).threshold).toBeCloseTo(adaptiveThreshold(5));
-    expect((calls[1]!.body as { threshold: number }).threshold).toBe(0.9);
+    expect(calls[0]!.body).not.toHaveProperty("threshold");
+    expect(calls[1]!.body).not.toHaveProperty("threshold");
   });
 
   it("rejects empty batches before sending", async () => {
@@ -457,38 +514,44 @@ describe("Firewall.classify — chunking", () => {
   it("sends a single text when input is within one chunk", async () => {
     const { calls } = mockFetch([{ status: 200, body: { prediction: "BENIGN", score: 0.1 } }]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    await fw.classify("short");
+    await fw.classify("short", { requestId: "short-req" });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.body).toEqual({ text: "short", threshold: 0.5 });
+    expect(calls[0]!.body).toEqual({
+      text: "short",
+      metadata: { silmaril: silmarilMetadata("short-req", 0, 0, 1) },
+    });
   });
 
   it("fans out chunk requests and aggregates the max score across chunks", async () => {
     const { calls } = mockFetch([
       {
         status: 200,
-        body: { prediction: "BENIGN", score: 0.2 },
+        body: { prediction: "BENIGN", score: 0.2, threshold: 0.75 },
       },
       {
         status: 200,
-        body: { prediction: "MALICIOUS", score: 0.95 },
+        body: { prediction: "MALICIOUS", score: 0.95, threshold: 0.75 },
       },
       {
         status: 200,
-        body: { prediction: "BENIGN", score: 0.4 },
+        body: { prediction: "BENIGN", score: 0.4, threshold: 0.75 },
       },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     // 1600 chars/window, 256 overlap -> 1344 stride. 4001 chars makes 3 chunks.
     const longText = "a".repeat(4001);
-    const result = await fw.classify(longText);
+    const result = await fw.classify(longText, { requestId: "chunk-req" });
     expect(result.prediction).toBe("MALICIOUS");
     expect(result.score).toBe(0.95);
-    expect(result.threshold).toBeCloseTo(adaptiveThreshold(3));
+    expect(result.threshold).toBe(0.75);
     expect(calls).toHaveLength(3);
-    for (const call of calls) {
+    for (const [index, call] of calls.entries()) {
       expect(call.body).toHaveProperty("text");
       expect(call.body).not.toHaveProperty("texts");
-      expect((call.body as { threshold: number }).threshold).toBeCloseTo(adaptiveThreshold(3));
+      expect(call.body).not.toHaveProperty("threshold");
+      expect((call.body as { metadata: { silmaril: unknown } }).metadata.silmaril).toEqual(
+        silmarilMetadata("chunk-req", 0, index, 3),
+      );
     }
   });
 
@@ -505,10 +568,14 @@ describe("Firewall.classify — chunking", () => {
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     const text = "b".repeat(2000);
-    await fw.classify(text, { hook: HookLabel.TOOL_RESPONSE });
+    await fw.classify(text, { hook: HookLabel.TOOL_RESPONSE, requestId: "hook-chunk-req" });
     expect(calls.length).toBeGreaterThan(1);
-    for (const call of calls) {
-      expect(call.body).toMatchObject({ hook: "tool_response", threshold: adaptiveThreshold(calls.length) });
+    for (const [index, call] of calls.entries()) {
+      expect(call.body).toMatchObject({ hook: "tool_response" });
+      expect(call.body).not.toHaveProperty("threshold");
+      expect((call.body as { metadata: { silmaril: unknown } }).metadata.silmaril).toEqual(
+        silmarilMetadata("hook-chunk-req", 0, index, calls.length),
+      );
       expect(call.body).not.toHaveProperty("texts");
     }
   });
@@ -527,10 +594,24 @@ describe("Firewall.classify — chunking", () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     const text = "d".repeat(2000);
     const metadata = { run_id: "run-chunked", secret_candidate: "sk-test-secret" };
-    await fw.classify(text, { hook: HookLabel.TOOL_RESPONSE, metadata });
+    await fw.classify(text, {
+      hook: HookLabel.TOOL_RESPONSE,
+      metadata,
+      requestId: "metadata-chunk-req",
+    });
     expect(calls.length).toBeGreaterThan(1);
-    for (const call of calls) {
-      expect(call.body).toMatchObject({ hook: "tool_response", metadata, threshold: adaptiveThreshold(calls.length) });
+    for (const [index, call] of calls.entries()) {
+      expect(call.body).toMatchObject({ hook: "tool_response" });
+      expect((call.body as { metadata: Record<string, unknown> }).metadata.run_id).toBe(
+        "run-chunked",
+      );
+      expect((call.body as { metadata: Record<string, unknown> }).metadata.secret_candidate).toBe(
+        "sk-test-secret",
+      );
+      expect((call.body as { metadata: { silmaril: unknown } }).metadata.silmaril).toEqual(
+        silmarilMetadata("metadata-chunk-req", 0, index, calls.length),
+      );
+      expect(call.body).not.toHaveProperty("threshold");
       expect(call.body).not.toHaveProperty("texts");
     }
   });
@@ -550,7 +631,7 @@ describe("Firewall.classify — chunking", () => {
         ok: true,
         status: 200,
         statusText: "status-200",
-        json: async () => ({ prediction: "BENIGN", score: 0.1 }),
+        json: async () => ({ prediction: "BENIGN", score: 0.1, threshold: 0.5 }),
         text: async () => "",
       } as unknown as Response;
     }) as unknown as typeof fetch;

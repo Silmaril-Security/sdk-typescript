@@ -29,12 +29,14 @@ export interface ClassifyOptions {
   hook?: HookLabel;
   toolName?: string;
   metadata?: ClassificationMetadata;
+  requestId?: string;
 }
 
 export interface ClassifyBatchOptions {
   hooks?: readonly HookLabel[];
   toolNames?: readonly (string | undefined)[];
   metadata?: readonly (ClassificationMetadata | undefined)[];
+  requestId?: string;
 }
 
 export interface LangChainAdapterOptions {
