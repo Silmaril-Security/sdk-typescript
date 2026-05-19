@@ -50,8 +50,9 @@
     "build": "tsup",
     "prepare": "tsup",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src test",
+    "lint": "eslint src test test-integ",
     "test": "vitest run",
+    "test:integ": "vitest run --config vitest.integ.config.ts",
     "test:watch": "vitest"
   },
   "peerDependencies": {
