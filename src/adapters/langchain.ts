@@ -11,7 +11,7 @@ import {
   HookLabel,
   resolveHooks,
 } from "../hooks.js";
-import type { BlockResult, LangChainAdapterOptions } from "../types.js";
+import type { BlockResult, ClassifyEvent, LangChainAdapterOptions } from "../types.js";
 import {
   extractTextFromDocuments,
   extractTextFromLLMResult,
@@ -88,25 +88,12 @@ export async function createLangChainHandler(
   const shadowMode = options.shadowMode ?? firewall.shadowMode;
   const onClassify = options.onClassify;
 
-  const fireOnClassify = (
-    hookLabel: HookLabel,
-    text: string,
-    result: BlockResult,
-    blocked: boolean,
-    toolName: string | undefined,
-  ): void => {
+  const fireOnClassify = (event: ClassifyEvent): void => {
     if (!onClassify) {
       return;
     }
     try {
-      onClassify({
-        hook: hookLabel,
-        ...(toolName !== undefined ? { toolName } : {}),
-        text,
-        result,
-        blocked,
-        shadowMode,
-      });
+      onClassify(event);
     } catch (err) {
       logger("onClassify callback threw", err);
     }
@@ -133,15 +120,31 @@ export async function createLangChainHandler(
     }
     const threshold = result.threshold;
     const blocked = result.score >= threshold;
-    fireOnClassify(hookLabel, text, result, blocked, toolName);
-    if (blocked && !shadowMode) {
-      throw new FirewallBlockedException({
-        score: result.score,
-        threshold,
-        promptText: text,
-        runId,
-      });
+    const commonEventFields = {
+      hook: hookLabel,
+      ...(toolName !== undefined ? { toolName } : {}),
+      runId,
+      text,
+      result,
+    };
+    fireOnClassify({
+      ...commonEventFields,
+      blocked,
+      shadowMode,
+    });
+    if (!blocked || shadowMode) {
+      return;
     }
+
+    throw new FirewallBlockedException({
+      score: result.score,
+      threshold,
+      promptText: text,
+      runId,
+      hook: hookLabel,
+      ...(toolName !== undefined ? { toolName } : {}),
+      result,
+    });
   };
 
   class SilmarilFirewallHandler extends BaseCallbackHandler {

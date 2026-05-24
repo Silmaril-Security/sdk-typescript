@@ -1,6 +1,6 @@
 {
   "name": "@silmaril-security/sdk",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "TypeScript SDK for Silmaril Firewall — prompt injection and jailbreak detection",
   "license": "SEE LICENSE IN LICENSE",
   "author": "Silmaril Security Inc.",
@@ -29,16 +29,42 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./adapters/vercel": {
+      "import": {
+        "types": "./dist/adapters/vercel.d.ts",
+        "default": "./dist/adapters/vercel.js"
+      },
+      "require": {
+        "types": "./dist/adapters/vercel.d.cts",
+        "default": "./dist/adapters/vercel.cjs"
+      }
+    },
+    "./adapters/langchain": {
+      "import": {
+        "types": "./dist/adapters/langchain.d.ts",
+        "default": "./dist/adapters/langchain.js"
+      },
+      "require": {
+        "types": "./dist/adapters/langchain.d.cts",
+        "default": "./dist/adapters/langchain.cjs"
+      }
     },
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"
@@ -56,7 +82,7 @@
   },
   "peerDependencies": {
     "@langchain/core": ">=0.3.0",
-    "ai": "^5.0.0"
+    "ai": "^5.0.0 || ^6.0.0"
   },
   "peerDependenciesMeta": {
     "@langchain/core": {
@@ -67,12 +93,12 @@
     }
   },
   "devDependencies": {
-    "@ai-sdk/provider": "^2.0.0",
+    "@ai-sdk/provider": "^3.0.10",
     "@langchain/core": "^1.1.39",
     "@types/node": "^20.12.0",
     "@typescript-eslint/eslint-plugin": "^7.8.0",
     "@typescript-eslint/parser": "^7.8.0",
-    "ai": "^5.0.52",
+    "ai": "^6.0.191",
     "eslint": "^8.57.0",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",

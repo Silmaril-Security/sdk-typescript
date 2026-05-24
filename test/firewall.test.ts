@@ -72,7 +72,7 @@ function silmarilMetadata(
 ): Record<string, unknown> {
   return {
     sdk_language: "typescript",
-    sdk_version: "0.4.0",
+    sdk_version: "0.4.1",
     request_id: requestId,
     input_index: inputIndex,
     chunk_index: chunkIndex,
@@ -101,7 +101,7 @@ describe("Firewall constructor", () => {
     expect(fw.shadowMode).toBe(false);
   });
 
-  it("accepts overrides", () => {
+  it("accepts option values", () => {
     const fw = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://example.test/classify",

@@ -1,7 +1,6 @@
 // Copyright (c) 2024-2025 Silmaril Security Inc. All rights reserved.
 // PROPRIETARY AND CONFIDENTIAL
 
-import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import { randomUUID } from "node:crypto";
 
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
@@ -14,6 +13,7 @@ import type {
   ClassificationMetadata,
   FirewallOptions,
   LangChainAdapterOptions,
+  LangChainFirewallHandler,
   MiddlewareOptions,
   Prediction,
 } from "./types.js";
@@ -21,7 +21,7 @@ import type {
 export const BASE_THRESHOLD = 0.5;
 export const TARGET_SEQUENCE_FPR = 0.01;
 export const MAX_ADAPTIVE_THRESHOLD = 0.9;
-export const SDK_VERSION = "0.4.0";
+export const SDK_VERSION = "0.4.1";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 export const DEFAULT_CHUNK_CONCURRENCY = 8;
 const DEFAULT_MAX_RETRIES = 5;
@@ -311,8 +311,12 @@ export class Firewall {
     return data.predictions.map((p) => blockResultFromResponse(p));
   }
 
-  asLangChainHandler(options: LangChainAdapterOptions = {}): Promise<BaseCallbackHandler> {
-    return import("./adapters/langchain.js").then((m) => m.createLangChainHandler(this, options));
+  asLangChainHandler<THandler = LangChainFirewallHandler>(
+    options: LangChainAdapterOptions = {},
+  ): Promise<THandler> {
+    return import("./adapters/langchain.js").then((m) =>
+      m.createLangChainHandler(this, options) as Promise<THandler>,
+    );
   }
 
   asMiddleware(options: MiddlewareOptions = {}): FirewallMiddleware {
