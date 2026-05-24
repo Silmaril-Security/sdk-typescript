@@ -49,9 +49,24 @@ export interface LangChainAdapterOptions {
   onClassify?: (event: ClassifyEvent) => void;
 }
 
+export interface LangChainFirewallHandler {
+  readonly name: string;
+  readonly raiseError: boolean;
+  readonly awaitHandlers: boolean;
+  handleChatModelStart?: (...args: unknown[]) => unknown;
+  handleLLMStart?: (...args: unknown[]) => unknown;
+  handleToolStart?: (...args: unknown[]) => unknown;
+  handleRetrieverStart?: (...args: unknown[]) => unknown;
+  handleLLMEnd?: (...args: unknown[]) => unknown;
+  handleToolEnd?: (...args: unknown[]) => unknown;
+  handleRetrieverEnd?: (...args: unknown[]) => unknown;
+}
+
 export interface ClassifyEvent {
   readonly hook: HookLabel;
   readonly toolName?: string;
+  readonly toolCallId?: string;
+  readonly runId?: string;
   readonly text: string;
   readonly result: BlockResult;
   readonly blocked: boolean;

@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FirewallBlockedException,
+  HookLabel,
   PromptBlockedException,
   SilmarilApiError,
 } from "../src/index.js";
@@ -84,17 +85,26 @@ describe("FirewallBlockedException", () => {
     expect(err.message).not.toContain("...");
   });
 
-  it("exposes score, threshold, promptText, and runId as readable fields", () => {
+  it("exposes blocking context as readable fields", () => {
+    const result = Object.freeze({ prediction: "MALICIOUS" as const, score: 0.7, threshold: 0.5 });
     const err = new FirewallBlockedException({
       score: 0.7,
       threshold: 0.5,
       promptText: "p",
       runId: "run-42",
+      hook: HookLabel.TOOL_CALL,
+      toolName: "execute",
+      toolCallId: "tc-42",
+      result,
     });
     expect(err.score).toBe(0.7);
     expect(err.threshold).toBe(0.5);
     expect(err.promptText).toBe("p");
     expect(err.runId).toBe("run-42");
+    expect(err.hook).toBe(HookLabel.TOOL_CALL);
+    expect(err.toolName).toBe("execute");
+    expect(err.toolCallId).toBe("tc-42");
+    expect(err.result).toBe(result);
     expect(err.name).toBe("FirewallBlockedException");
   });
 

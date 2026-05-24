@@ -12,6 +12,7 @@ interface VercelContentPart {
   toolCallId?: string;
   toolName?: string;
   args?: unknown;
+  output?: unknown;
   result?: unknown;
 }
 
@@ -25,6 +26,7 @@ interface VercelToolCall {
   toolCallId?: string;
   toolName?: string;
   args?: unknown;
+  input?: unknown;
 }
 
 interface VercelGenerateResult {
@@ -33,14 +35,14 @@ interface VercelGenerateResult {
 }
 
 interface WrapGenerateArgs<TResult extends VercelGenerateResult & Record<string, unknown>> {
-  params: { prompt: ReadonlyArray<VercelPromptMessage> } & Record<string, unknown>;
+  params: { prompt?: ReadonlyArray<VercelPromptMessage> } & Record<string, unknown>;
   doGenerate: () => PromiseLike<TResult>;
 }
 
 interface WrapStreamArgs<
   TResult extends { stream: ReadableStream<unknown> } & Record<string, unknown>,
 > {
-  params: { prompt: ReadonlyArray<VercelPromptMessage> } & Record<string, unknown>;
+  params: { prompt?: ReadonlyArray<VercelPromptMessage> } & Record<string, unknown>;
   doStream: () => PromiseLike<TResult>;
 }
 
@@ -48,6 +50,11 @@ interface StreamPart {
   type?: string;
   textDelta?: string;
   delta?: string;
+}
+
+interface VercelStepContext {
+  toolName: string | undefined;
+  toolCallId: string | undefined;
 }
 
 function stringifyToolValue(value: unknown): string {
@@ -64,6 +71,9 @@ function stringifyToolValue(value: unknown): string {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function extractContentText(content: VercelPromptMessage["content"]): string {
   if (typeof content === "string") {
@@ -82,23 +92,42 @@ function extractContentText(content: VercelPromptMessage["content"]): string {
 
 function iterateToolResultParts(
   message: VercelPromptMessage,
-): Array<{ text: string; toolName: string | undefined }> {
+): Array<{ text: string; toolName: string | undefined; toolCallId: string | undefined }> {
   if (typeof message.content === "string") {
     return [];
   }
-  const out: Array<{ text: string; toolName: string | undefined }> = [];
+  const out: Array<{ text: string; toolName: string | undefined; toolCallId: string | undefined }> = [];
   for (const part of message.content) {
     if (typeof part === "string") {
       continue;
     }
     if (part.type === "tool-result") {
-      const text = stringifyToolValue(part.result);
+      const text = stringifyToolResult(part.result !== undefined ? part.result : part.output);
       if (text.trim()) {
-        out.push({ text, toolName: part.toolName });
+        out.push({ text, toolName: part.toolName, toolCallId: part.toolCallId });
       }
     }
   }
   return out;
+}
+
+function stringifyToolResult(value: unknown): string {
+  if (!isRecord(value)) {
+    return stringifyToolValue(value);
+  }
+  if ((value.type === "text" || value.type === "error-text") && typeof value.value === "string") {
+    return value.value;
+  }
+  if ((value.type === "json" || value.type === "error-json") && value.value !== undefined) {
+    return stringifyToolValue(value.value);
+  }
+  if (value.type === "content" && Array.isArray(value.value)) {
+    return value.value
+      .map((part) => (isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : ""))
+      .filter((text) => text.length > 0)
+      .join(" ");
+  }
+  return stringifyToolValue(value);
 }
 
 function findLastUserMessage(
@@ -114,6 +143,8 @@ function findLastUserMessage(
 }
 
 export interface FirewallMiddleware {
+  readonly specificationVersion: "v3";
+  readonly middlewareVersion: "v2";
   wrapGenerate: <TResult extends VercelGenerateResult & Record<string, unknown>>(
     args: WrapGenerateArgs<TResult>,
   ) => Promise<TResult>;
@@ -133,34 +164,45 @@ export function createMiddleware(
   const classifyOrBlock = async (
     text: string,
     hook: HookLabel,
-    toolName?: string,
+    context: VercelStepContext = { toolName: undefined, toolCallId: undefined },
   ): Promise<void> => {
     if (!text.trim()) {
       return;
     }
+    const { toolName, toolCallId } = context;
     const result: BlockResult = await firewall.classify(
       text,
       toolName !== undefined ? { hook, toolName } : { hook },
     );
     const threshold = result.threshold;
     const blocked = result.score >= threshold;
-    options.onClassify?.({
+    const commonEventFields = {
       hook,
       ...(toolName !== undefined ? { toolName } : {}),
+      ...(toolCallId !== undefined ? { toolCallId } : {}),
       text,
       result,
+    };
+    options.onClassify?.({
+      ...commonEventFields,
       blocked,
       shadowMode,
     });
-    if (blocked && !shadowMode) {
-      const err = new FirewallBlockedException({
-        score: result.score,
-        threshold,
-        promptText: text,
-      });
-      options.onBlocked?.(err);
-      throw err;
+    if (!blocked || shadowMode) {
+      return;
     }
+
+    const err = new FirewallBlockedException({
+      score: result.score,
+      threshold,
+      promptText: text,
+      hook,
+      ...(toolName !== undefined ? { toolName } : {}),
+      ...(toolCallId !== undefined ? { toolCallId } : {}),
+      result,
+    });
+    options.onBlocked?.(err);
+    throw err;
   };
 
   const scanPrompt = async (prompt: ReadonlyArray<VercelPromptMessage>): Promise<void> => {
@@ -175,8 +217,8 @@ export function createMiddleware(
     // tool_response + toolName. No manual wiring from the caller — the
     // toolName is read directly from the Vercel content part.
     if (role === "tool") {
-      for (const { text, toolName } of iterateToolResultParts(last)) {
-        await classifyOrBlock(text, HookLabel.TOOL_RESPONSE, toolName);
+      for (const { text, toolName, toolCallId } of iterateToolResultParts(last)) {
+        await classifyOrBlock(text, HookLabel.TOOL_RESPONSE, { toolName, toolCallId });
       }
       return;
     }
@@ -203,23 +245,28 @@ export function createMiddleware(
         if (!call || typeof call !== "object") {
           continue;
         }
+        const toolInput = call.args !== undefined ? call.args : call.input;
         const args =
-          typeof call.args === "string" ? call.args : stringifyToolValue(call.args);
+          typeof toolInput === "string" ? toolInput : stringifyToolValue(toolInput);
         const toolName = typeof call.toolName === "string" ? call.toolName : undefined;
+        const toolCallId = typeof call.toolCallId === "string" ? call.toolCallId : undefined;
         if (args.trim()) {
-          await classifyOrBlock(args, HookLabel.TOOL_CALL, toolName);
+          await classifyOrBlock(args, HookLabel.TOOL_CALL, { toolName, toolCallId });
         }
       }
     }
   };
 
   return {
+    specificationVersion: "v3",
+    middlewareVersion: "v2",
+
     async wrapGenerate<TResult extends VercelGenerateResult & Record<string, unknown>>({
       params,
       doGenerate,
     }: WrapGenerateArgs<TResult>): Promise<TResult> {
       if (scanInput) {
-        await scanPrompt(params.prompt);
+        await scanPrompt(params.prompt ?? []);
       }
       const result = await doGenerate();
       await scanGenerateResult(result);
@@ -231,7 +278,7 @@ export function createMiddleware(
       doStream,
     }: WrapStreamArgs<TResult>): Promise<TResult> {
       if (scanInput) {
-        await scanPrompt(params.prompt);
+        await scanPrompt(params.prompt ?? []);
       }
       const { stream, ...rest } = await doStream();
       if (!scanOutput) {

@@ -37,7 +37,7 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.4.0
+npm install @silmaril-security/sdk@0.4.1
 ```
 
 Requires Node 18 or later.
@@ -46,7 +46,12 @@ The package name and SDK import path are both `@silmaril-security/sdk`, so call
 sites use `Firewall`, `HookLabel`, and `FirewallBlockedException` from that
 package. `PromptBlockedException` is a deprecated alias.
 
-Optional Vercel AI SDK middleware support:
+This repository is public and source-available for integration transparency,
+but the SDK is not permissive open source. See [LICENSE](LICENSE) for the
+governing terms.
+
+The core client does not require optional framework peer dependencies. Optional
+Vercel AI SDK middleware support is compatible with Vercel AI SDK v5 and v6:
 
 ```sh
 npm install ai @ai-sdk/openai
@@ -178,8 +183,8 @@ const model = wrapLanguageModel({
 await generateText({ model, prompt: "Hello" });
 ```
 
-Per-adapter overrides let you enforce or shadow one surface without changing the
-client default:
+Per-adapter `shadowMode` options let you enforce or shadow one surface without
+changing the client default:
 
 ```ts
 fw.asMiddleware({
@@ -191,10 +196,10 @@ await fw.asLangChainHandler({
 });
 ```
 
-`ClassifyEvent` includes `hook`, `toolName`, `text`, `result`, `blocked`, and
-`shadowMode`. `blocked` is computed from `result.score >= result.threshold`.
-Direct `classify()` and `classifyBatch()` calls never throw on verdicts and are
-unaffected by shadow mode.
+`ClassifyEvent` includes `hook`, `toolName`, `toolCallId`, `runId`, `text`,
+`result`, `blocked`, and `shadowMode`. `blocked` is computed from
+`result.score >= result.threshold`. Direct `classify()` and `classifyBatch()`
+calls never throw on verdicts and are unaffected by shadow mode.
 
 ## Hook Labels
 
@@ -242,7 +247,7 @@ by the SDK.
 ## Errors
 
 - `SilmarilApiError`: thrown when the firewall API responds with a non-2xx or redirect status. Carries `status`, `statusText`, a 64 KiB-capped `body`, and any parsed malformed-input diagnostics. The default error message omits the body to keep logs clean.
-- `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters in enforcement mode when the backend blocks the request. Carries `score`, `threshold`, `promptText`, and optional `runId`.
+- `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters in enforcement mode when the backend blocks the request. Carries `score`, `threshold`, `promptText`, and optional `runId`, `hook`, `toolName`, `toolCallId`, and `result`.
 
 `PromptBlockedException` remains as a deprecated alias for one release.
 
@@ -289,10 +294,14 @@ tenant-owned thresholding.
 
 ## Migration Notes
 
-Version `0.4.0` moves all threshold decisions to Firewall tenant/backend
-config, adds SDK reconstruction metadata, and renames blocking exceptions to
-`FirewallBlockedException`. The deprecated `PromptBlockedException` alias
-remains available for one release.
+Version `0.4.1` is the public npm recovery release for `0.4.x`: the `v0.4.0`
+Git tag exists, but `@silmaril-security/sdk@0.4.0` was not published to npm.
+Use `0.4.1` or later. This release moves all threshold decisions to Firewall
+tenant/backend config, adds SDK reconstruction metadata, renames blocking
+exceptions to `FirewallBlockedException`, keeps optional LangChain.js types out
+of the root package declarations, adds typed CJS/ESM export conditions, supports
+Vercel AI SDK v5 and v6. The deprecated
+`PromptBlockedException` alias remains available for one release.
 
 ## Vercel AI SDK Middleware
 
@@ -354,7 +363,17 @@ enabled. `PromptBlockedException` continues to work as a deprecated alias for
 one release.
 
 `asLangChainHandler()` is async because it lazy-loads `@langchain/core` so core
-users do not pay for it.
+users do not pay for it. The root package intentionally exposes a structural
+handler type so projects that do not install LangChain.js can still typecheck
+with `skipLibCheck: false`. If your project needs the exact LangChain
+`BaseCallbackHandler` return type, import the adapter helper from the optional
+subpath:
+
+```ts
+import { createLangChainHandler } from "@silmaril-security/sdk/adapters/langchain";
+
+const handler = await createLangChainHandler(fw);
+```
 
 ## Retries
 

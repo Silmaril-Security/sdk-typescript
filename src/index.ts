@@ -45,5 +45,6 @@ export type {
   ClassifyOptions,
   ClassifyBatchOptions,
   LangChainAdapterOptions,
+  LangChainFirewallHandler,
   MiddlewareOptions,
 } from "./types.js";

@@ -1,7 +1,11 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: {
+    index: "src/index.ts",
+    "adapters/vercel": "src/adapters/vercel.ts",
+    "adapters/langchain": "src/adapters/langchain.ts",
+  },
   format: ["esm", "cjs"],
   dts: true,
   sourcemap: true,

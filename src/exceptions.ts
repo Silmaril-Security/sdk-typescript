@@ -1,6 +1,9 @@
 // Copyright (c) 2024-2025 Silmaril Security Inc. All rights reserved.
 // PROPRIETARY AND CONFIDENTIAL
 
+import type { HookLabel } from "./hooks.js";
+import type { BlockResult } from "./types.js";
+
 const MAX_PROMPT_DISPLAY_LEN = 100;
 
 export interface MalformedInputDetails {
@@ -17,12 +20,20 @@ export class FirewallBlockedException extends Error {
   readonly threshold: number;
   readonly promptText: string;
   readonly runId: string | undefined;
+  readonly hook: HookLabel | undefined;
+  readonly toolName: string | undefined;
+  readonly toolCallId: string | undefined;
+  readonly result: BlockResult | undefined;
 
   constructor(params: {
     score: number;
     threshold: number;
     promptText: string;
     runId?: string;
+    hook?: HookLabel;
+    toolName?: string;
+    toolCallId?: string;
+    result?: BlockResult;
   }) {
     super(FirewallBlockedException.formatMessage(params));
     this.name = "FirewallBlockedException";
@@ -30,6 +41,10 @@ export class FirewallBlockedException extends Error {
     this.threshold = params.threshold;
     this.promptText = params.promptText;
     this.runId = params.runId;
+    this.hook = params.hook;
+    this.toolName = params.toolName;
+    this.toolCallId = params.toolCallId;
+    this.result = params.result;
     Object.setPrototypeOf(this, FirewallBlockedException.prototype);
   }
 
