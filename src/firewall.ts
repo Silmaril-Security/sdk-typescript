@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
-import { chunkText, sanitizeText } from "./chunking.js";
+import { SERVER_SINGLE_TEXT_MAX_CHARS, chunkText, sanitizeText } from "./chunking.js";
 import { SilmarilApiError } from "./exceptions.js";
 import type {
   BlockResult,
@@ -245,7 +245,7 @@ export class Firewall {
   }
 
   async classify(text: string, options: ClassifyOptions = {}): Promise<BlockResult> {
-    const chunks = chunkText(text);
+    const chunks = text.length <= SERVER_SINGLE_TEXT_MAX_CHARS ? [sanitizeText(text)] : chunkText(text);
     const requestId = options.requestId ?? randomUUID();
     if (chunks.length === 1) {
       return this.classifySingleChunk(chunks[0]!, options, {

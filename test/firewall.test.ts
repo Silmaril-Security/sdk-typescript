@@ -7,6 +7,7 @@ import {
   Firewall,
   HookLabel,
   MAX_INPUT_CHARS,
+  SERVER_SINGLE_TEXT_MAX_CHARS,
   SilmarilApiError,
 } from "../src/index.js";
 
@@ -522,7 +523,24 @@ describe("Firewall.classify — chunking", () => {
     });
   });
 
-  it("fans out chunk requests and aggregates the max score across chunks", async () => {
+  it("sends normal-size long input as a single request for server token-windowing", async () => {
+    const { calls } = mockFetch([
+      {
+        status: 200,
+        body: { prediction: "BENIGN", score: 0.2, threshold: 0.75 },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const longText = "a".repeat(4001);
+    await fw.classify(longText, { requestId: "server-window-req" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toMatchObject({
+      text: longText,
+      metadata: { silmaril: silmarilMetadata("server-window-req", 0, 0, 1) },
+    });
+  });
+
+  it("fans out oversize fallback chunk requests and aggregates the max score across chunks", async () => {
     const { calls } = mockFetch([
       {
         status: 200,
@@ -538,24 +556,23 @@ describe("Firewall.classify — chunking", () => {
       },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    // 1600 chars/window, 256 overlap -> 1344 stride. 4001 chars makes 3 chunks.
-    const longText = "a".repeat(4001);
+    const longText = "a".repeat(SERVER_SINGLE_TEXT_MAX_CHARS + 4001);
     const result = await fw.classify(longText, { requestId: "chunk-req" });
     expect(result.prediction).toBe("MALICIOUS");
     expect(result.score).toBe(0.95);
     expect(result.threshold).toBe(0.75);
-    expect(calls).toHaveLength(3);
+    expect(calls.length).toBeGreaterThan(3);
     for (const [index, call] of calls.entries()) {
       expect(call.body).toHaveProperty("text");
       expect(call.body).not.toHaveProperty("texts");
       expect(call.body).not.toHaveProperty("threshold");
       expect((call.body as { metadata: { silmaril: unknown } }).metadata.silmaril).toEqual(
-        silmarilMetadata("chunk-req", 0, index, 3),
+        silmarilMetadata("chunk-req", 0, index, calls.length),
       );
     }
   });
 
-  it("propagates the hook to every chunk request", async () => {
+  it("propagates the hook to every oversize fallback chunk request", async () => {
     const { calls } = mockFetch([
       {
         status: 200,
@@ -567,7 +584,7 @@ describe("Firewall.classify — chunking", () => {
       },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    const text = "b".repeat(2000);
+    const text = "b".repeat(SERVER_SINGLE_TEXT_MAX_CHARS + 2000);
     await fw.classify(text, { hook: HookLabel.TOOL_RESPONSE, requestId: "hook-chunk-req" });
     expect(calls.length).toBeGreaterThan(1);
     for (const [index, call] of calls.entries()) {
@@ -580,7 +597,7 @@ describe("Firewall.classify — chunking", () => {
     }
   });
 
-  it("propagates metadata to every chunk request", async () => {
+  it("propagates metadata to every oversize fallback chunk request", async () => {
     const { calls } = mockFetch([
       {
         status: 200,
@@ -592,7 +609,7 @@ describe("Firewall.classify — chunking", () => {
       },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    const text = "d".repeat(2000);
+    const text = "d".repeat(SERVER_SINGLE_TEXT_MAX_CHARS + 2000);
     const metadata = { run_id: "run-chunked", secret_candidate: "sk-test-secret" };
     await fw.classify(text, {
       hook: HookLabel.TOOL_RESPONSE,
@@ -640,7 +657,7 @@ describe("Firewall.classify — chunking", () => {
       apiUrl: TEST_API_URL,
       chunkConcurrency: 2,
     });
-    await fw.classify("e".repeat(8000));
+    await fw.classify("e".repeat(SERVER_SINGLE_TEXT_MAX_CHARS + 8000));
     expect(calls).toBeGreaterThan(2);
     expect(maxActive).toBeLessThanOrEqual(2);
   });
@@ -652,8 +669,8 @@ describe("Firewall.classify — chunking", () => {
       { status: 200, body: { prediction: "BENIGN", score: 0.1 } },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    await expect(fw.classify("f".repeat(4001))).rejects.toBeInstanceOf(SilmarilApiError);
-    expect(calls).toHaveLength(3);
+    await expect(fw.classify("f".repeat(SERVER_SINGLE_TEXT_MAX_CHARS + 4001))).rejects.toBeInstanceOf(SilmarilApiError);
+    expect(calls.length).toBeGreaterThan(1);
   });
 
   it("throws when input exceeds MAX_INPUT_CHARS", async () => {
