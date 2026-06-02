@@ -36,6 +36,26 @@ export {
   prependToolName,
 } from "./hooks.js";
 
+export {
+  Outcome,
+  PRIMARY_OUTCOMES,
+  HARMFUL_OUTCOMES,
+  OUTCOME_DESCRIPTIONS,
+  isPrimaryOutcome,
+  isHarmfulOutcome,
+  normalizePrimaryOutcome,
+  normalizeHarmfulOutcome,
+  normalizeHarmfulOutcomeMap,
+} from "./outcomes.js";
+
+export type {
+  KnownPrimaryOutcome,
+  KnownHarmfulOutcome,
+  PrimaryOutcome,
+  HarmfulOutcome,
+  UnknownOutcome,
+} from "./outcomes.js";
+
 export type {
   BlockResult,
   ClassifyEvent,
