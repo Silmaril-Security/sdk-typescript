@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
 import { chunkText, sanitizeText } from "./chunking.js";
 import { SilmarilApiError } from "./exceptions.js";
+import { normalizeHarmfulOutcomeMap, normalizePrimaryOutcome } from "./outcomes.js";
 import type {
   BlockResult,
   ClassifyBatchOptions,
@@ -46,10 +47,10 @@ interface SingleClassifyResponse {
   prediction: Prediction;
   score: number;
   threshold: number;
-  primary_outcome?: string;
-  outcome_scores?: Record<string, number>;
-  detector_scores?: Record<string, number>;
-  detector_counts?: Record<string, number>;
+  primary_outcome?: unknown;
+  outcome_scores?: unknown;
+  detector_scores?: unknown;
+  detector_counts?: unknown;
 }
 
 interface BatchClassifyResponse {
@@ -77,32 +78,35 @@ function blockResultFromResponse(data: SingleClassifyResponse): BlockResult {
     prediction: Prediction;
     score: number;
     threshold: number;
-    primaryOutcome?: string;
-    outcomeScores?: Readonly<Record<string, number>>;
-    detectorScores?: Readonly<Record<string, number>>;
-    detectorCounts?: Readonly<Record<string, number>>;
+    primaryOutcome?: NonNullable<BlockResult["primaryOutcome"]>;
+    outcomeScores?: NonNullable<BlockResult["outcomeScores"]>;
+    detectorScores?: NonNullable<BlockResult["detectorScores"]>;
+    detectorCounts?: NonNullable<BlockResult["detectorCounts"]>;
   } = {
     prediction: data.prediction,
     score: Number(data.score),
     threshold: Number(data.threshold),
   };
   if (data.primary_outcome !== undefined) {
-    result.primaryOutcome = data.primary_outcome;
+    result.primaryOutcome = normalizePrimaryOutcome(data.primary_outcome);
   }
   if (data.outcome_scores !== undefined) {
-    result.outcomeScores = Object.freeze(
-      Object.fromEntries(Object.entries(data.outcome_scores).map(([k, v]) => [k, Number(v)])),
-    );
+    const outcomeScores = normalizeHarmfulOutcomeMap(data.outcome_scores, "outcome_scores");
+    if (outcomeScores !== undefined) {
+      result.outcomeScores = outcomeScores;
+    }
   }
   if (data.detector_scores !== undefined) {
-    result.detectorScores = Object.freeze(
-      Object.fromEntries(Object.entries(data.detector_scores).map(([k, v]) => [k, Number(v)])),
-    );
+    const detectorScores = normalizeHarmfulOutcomeMap(data.detector_scores, "detector_scores");
+    if (detectorScores !== undefined) {
+      result.detectorScores = detectorScores;
+    }
   }
   if (data.detector_counts !== undefined) {
-    result.detectorCounts = Object.freeze(
-      Object.fromEntries(Object.entries(data.detector_counts).map(([k, v]) => [k, Number(v)])),
-    );
+    const detectorCounts = normalizeHarmfulOutcomeMap(data.detector_counts, "detector_counts");
+    if (detectorCounts !== undefined) {
+      result.detectorCounts = detectorCounts;
+    }
   }
   return Object.freeze(result);
 }

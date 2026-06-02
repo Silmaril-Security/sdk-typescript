@@ -117,6 +117,52 @@ internally applied threshold. Direct calls do not throw on malicious verdicts.
 The Vercel AI SDK and LangChain.js adapters use `result.threshold` and throw
 `FirewallBlockedException` when enforcement is enabled.
 
+## Handle Outcomes
+
+Direct calls expose typed outcome labels so applications can choose different
+responses for different firewall decisions:
+
+```ts
+import { Firewall, HookLabel, Outcome } from "@silmaril-security/sdk";
+
+const result = await fw.classify(userInput, {
+  hook: HookLabel.USER_INPUT,
+});
+
+if (result.score < result.threshold) {
+  continueNormally();
+} else {
+  switch (result.primaryOutcome) {
+    case Outcome.SecretExposure:
+      redactAndSuppress(result);
+      break;
+    case Outcome.InformationDisclosure:
+      requireReview(result);
+      break;
+    case Outcome.ControlAbuse:
+      denyAndAskForConfirmation(result);
+      break;
+    case Outcome.SystemCompromise:
+      blockAndEscalate(result);
+      break;
+    case Outcome.ServiceDisruption:
+      blockDisruptiveAction(result);
+      break;
+    default:
+      blockByDefault(result);
+  }
+}
+```
+
+Outcome taxonomy:
+
+- `benign`: no harmful firewall outcome detected.
+- `information_disclosure`: private data, documents, internal context, logs, traces, customer data, SQL rows, topology, or similar non-secret sensitive information.
+- `secret_exposure`: credentials, tokens, API keys, cookies, passwords, signing keys, OAuth secrets, session material, or webhook secrets.
+- `control_abuse`: misuse of authorized tools or user privileges to send, change, approve, delete, operate, or bypass policy/RBAC without a stronger outcome.
+- `system_compromise`: privilege escalation, account takeover, hostile integration/plugin takeover, persistence, lateral movement, attacker webhook registration, or code/plugin execution.
+- `service_disruption`: downtime, lockout, degradation, alert suppression, destructive loops, resource exhaustion, cost spikes, or hidden outage evidence.
+
 ## Options
 
 ```ts

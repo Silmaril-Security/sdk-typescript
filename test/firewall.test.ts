@@ -7,6 +7,7 @@ import {
   Firewall,
   HookLabel,
   MAX_INPUT_CHARS,
+  Outcome,
   SilmarilApiError,
 } from "../src/index.js";
 
@@ -167,10 +168,10 @@ describe("Firewall.classify", () => {
         body: {
           prediction: "MALICIOUS",
           score: 0.91,
-          primary_outcome: "secret_exposure",
-          outcome_scores: { secret_exposure: 0.8 },
-          detector_scores: { secret_exposure: 1.0 },
-          detector_counts: { secret_exposure: 2 },
+          primary_outcome: Outcome.SecretExposure,
+          outcome_scores: { [Outcome.SecretExposure]: 0.8 },
+          detector_scores: { [Outcome.SecretExposure]: 1.0 },
+          detector_counts: { [Outcome.SecretExposure]: 2 },
         },
       },
     ]);
@@ -181,11 +182,63 @@ describe("Firewall.classify", () => {
       prediction: "MALICIOUS",
       score: 0.91,
       threshold: 0.5,
-      primaryOutcome: "secret_exposure",
-      outcomeScores: { secret_exposure: 0.8 },
-      detectorScores: { secret_exposure: 1.0 },
-      detectorCounts: { secret_exposure: 2 },
+      primaryOutcome: Outcome.SecretExposure,
+      outcomeScores: { [Outcome.SecretExposure]: 0.8 },
+      detectorScores: { [Outcome.SecretExposure]: 1.0 },
+      detectorCounts: { [Outcome.SecretExposure]: 2 },
     });
+  });
+
+  it("rejects unknown Sapphire outcome fields", async () => {
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.91,
+          primary_outcome: "unknown_outcome",
+        },
+      },
+    ]);
+    await expect(fw.classify("x")).rejects.toThrow(/invalid primary_outcome/);
+
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.91,
+          outcome_scores: { unknown_outcome: 0.8 },
+        },
+      },
+    ]);
+    await expect(fw.classify("x")).rejects.toThrow(/invalid outcome_scores key/);
+
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.91,
+          detector_scores: { unknown_outcome: 0.8 },
+        },
+      },
+    ]);
+    await expect(fw.classify("x")).rejects.toThrow(/invalid detector_scores key/);
+
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.91,
+          detector_counts: { unknown_outcome: 1 },
+        },
+      },
+    ]);
+    await expect(fw.classify("x")).rejects.toThrow(/invalid detector_counts key/);
   });
 
   it("includes hook and tool_name wire keys when provided", async () => {
@@ -353,10 +406,10 @@ describe("Firewall.classifyBatch", () => {
             {
               prediction: "MALICIOUS",
               score: 0.9,
-              primary_outcome: "system_compromise",
-              outcome_scores: { system_compromise: 0.92 },
-              detector_scores: { information_disclosure: 0.85 },
-              detector_counts: { information_disclosure: 1 },
+              primary_outcome: Outcome.SystemCompromise,
+              outcome_scores: { [Outcome.SystemCompromise]: 0.92 },
+              detector_scores: { [Outcome.InformationDisclosure]: 0.85 },
+              detector_counts: { [Outcome.InformationDisclosure]: 1 },
             },
           ],
         },
@@ -370,10 +423,10 @@ describe("Firewall.classifyBatch", () => {
       prediction: "MALICIOUS",
       score: 0.9,
       threshold: 0.5,
-      primaryOutcome: "system_compromise",
-      outcomeScores: { system_compromise: 0.92 },
-      detectorScores: { information_disclosure: 0.85 },
-      detectorCounts: { information_disclosure: 1 },
+      primaryOutcome: Outcome.SystemCompromise,
+      outcomeScores: { [Outcome.SystemCompromise]: 0.92 },
+      detectorScores: { [Outcome.InformationDisclosure]: 0.85 },
+      detectorCounts: { [Outcome.InformationDisclosure]: 1 },
     });
   });
 

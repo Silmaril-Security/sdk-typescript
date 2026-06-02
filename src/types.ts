@@ -2,6 +2,7 @@
 // PROPRIETARY AND CONFIDENTIAL
 
 import type { FirewallHook, HookLabel } from "./hooks.js";
+import type { HarmfulOutcome, PrimaryOutcome } from "./outcomes.js";
 
 export type Prediction = "BENIGN" | "MALICIOUS";
 
@@ -9,10 +10,10 @@ export interface BlockResult {
   readonly prediction: Prediction;
   readonly score: number;
   readonly threshold: number;
-  readonly primaryOutcome?: string;
-  readonly outcomeScores?: Readonly<Record<string, number>>;
-  readonly detectorScores?: Readonly<Record<string, number>>;
-  readonly detectorCounts?: Readonly<Record<string, number>>;
+  readonly primaryOutcome?: PrimaryOutcome;
+  readonly outcomeScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
+  readonly detectorScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
+  readonly detectorCounts?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
 }
 
 export interface FirewallOptions {
