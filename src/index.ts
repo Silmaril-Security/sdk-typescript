@@ -49,8 +49,11 @@ export {
 } from "./outcomes.js";
 
 export type {
+  KnownPrimaryOutcome,
+  KnownHarmfulOutcome,
   PrimaryOutcome,
   HarmfulOutcome,
+  UnknownOutcome,
 } from "./outcomes.js";
 
 export type {

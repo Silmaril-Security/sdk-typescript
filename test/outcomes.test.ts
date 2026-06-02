@@ -31,9 +31,12 @@ describe("outcomes", () => {
 
   it("validates primary and harmful outcomes", () => {
     expect(normalizePrimaryOutcome(Outcome.Benign)).toBe(Outcome.Benign);
+    expect(normalizePrimaryOutcome("data_exfiltration")).toBe("data_exfiltration");
     expect(isHarmfulOutcome(Outcome.SecretExposure)).toBe(true);
     expect(isHarmfulOutcome(Outcome.Benign)).toBe(false);
-    expect(() => normalizePrimaryOutcome("unknown")).toThrow(/invalid primary_outcome/);
+    expect(isPrimaryOutcome(42)).toBe(false);
+    expect(isHarmfulOutcome("data_exfiltration")).toBe(false);
+    expect(() => normalizePrimaryOutcome(42)).toThrow(/invalid primary_outcome/);
   });
 
   it("normalizes harmful outcome maps", () => {
@@ -49,8 +52,14 @@ describe("outcomes", () => {
       [Outcome.SecretExposure]: 0.9,
       [Outcome.SystemCompromise]: 0.7,
     });
+    expect(normalizeHarmfulOutcomeMap({ data_exfiltration: 1 }, "outcome_scores")).toEqual({
+      data_exfiltration: 1,
+    });
     expect(() =>
       normalizeHarmfulOutcomeMap({ [Outcome.Benign]: 1 }, "outcome_scores"),
     ).toThrow(/invalid outcome_scores key/);
+    expect(() =>
+      normalizeHarmfulOutcomeMap({ [Outcome.SecretExposure]: "high" }, "outcome_scores"),
+    ).toThrow(/invalid outcome_scores value/);
   });
 });

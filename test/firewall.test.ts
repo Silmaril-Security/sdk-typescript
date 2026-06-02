@@ -189,7 +189,7 @@ describe("Firewall.classify", () => {
     });
   });
 
-  it("rejects unknown Sapphire outcome fields", async () => {
+  it("decodes future Sapphire outcome labels", async () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
 
     mockFetch([
@@ -198,20 +198,34 @@ describe("Firewall.classify", () => {
         body: {
           prediction: "MALICIOUS",
           score: 0.91,
-          primary_outcome: "unknown_outcome",
+          primary_outcome: "data_exfiltration",
+          outcome_scores: { data_exfiltration: 0.8 },
+          detector_scores: { data_exfiltration: 0.7 },
+          detector_counts: { data_exfiltration: 1 },
         },
       },
     ]);
+    await expect(fw.classify("x")).resolves.toEqual({
+      prediction: "MALICIOUS",
+      score: 0.91,
+      threshold: expect.any(Number),
+      primaryOutcome: "data_exfiltration",
+      outcomeScores: { data_exfiltration: 0.8 },
+      detectorScores: { data_exfiltration: 0.7 },
+      detectorCounts: { data_exfiltration: 1 },
+    });
+  });
+
+  it("rejects malformed Sapphire outcome fields", async () => {
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    mockFetch([{ status: 200, body: { prediction: "MALICIOUS", score: 0.91, primary_outcome: 42 } }]);
     await expect(fw.classify("x")).rejects.toThrow(/invalid primary_outcome/);
 
     mockFetch([
       {
         status: 200,
-        body: {
-          prediction: "MALICIOUS",
-          score: 0.91,
-          outcome_scores: { unknown_outcome: 0.8 },
-        },
+        body: { prediction: "MALICIOUS", score: 0.91, outcome_scores: { [Outcome.Benign]: 0.8 } },
       },
     ]);
     await expect(fw.classify("x")).rejects.toThrow(/invalid outcome_scores key/);
@@ -222,23 +236,11 @@ describe("Firewall.classify", () => {
         body: {
           prediction: "MALICIOUS",
           score: 0.91,
-          detector_scores: { unknown_outcome: 0.8 },
+          detector_scores: { [Outcome.SecretExposure]: "high" },
         },
       },
     ]);
-    await expect(fw.classify("x")).rejects.toThrow(/invalid detector_scores key/);
-
-    mockFetch([
-      {
-        status: 200,
-        body: {
-          prediction: "MALICIOUS",
-          score: 0.91,
-          detector_counts: { unknown_outcome: 1 },
-        },
-      },
-    ]);
-    await expect(fw.classify("x")).rejects.toThrow(/invalid detector_counts key/);
+    await expect(fw.classify("x")).rejects.toThrow(/invalid detector_scores value/);
   });
 
   it("includes hook and tool_name wire keys when provided", async () => {
