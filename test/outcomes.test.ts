@@ -59,6 +59,9 @@ describe("outcomes", () => {
       normalizeHarmfulOutcomeMap({ [Outcome.Benign]: 1 }, "outcome_scores"),
     ).toThrow(/invalid outcome_scores key/);
     expect(() =>
+      normalizeHarmfulOutcomeMap({ [Outcome.Benign]: "high" }, "outcome_scores"),
+    ).toThrow(/invalid outcome_scores key/);
+    expect(() =>
       normalizeHarmfulOutcomeMap({ [Outcome.SecretExposure]: "high" }, "outcome_scores"),
     ).toThrow(/invalid outcome_scores value/);
   });

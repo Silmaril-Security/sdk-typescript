@@ -92,10 +92,11 @@ export function normalizeHarmfulOutcomeMap(
   }
   const out: Partial<Record<HarmfulOutcome, number>> = {};
   for (const [key, value] of Object.entries(values)) {
+    const normalizedKey = normalizeHarmfulOutcome(key, `${fieldName} key`);
     if (typeof value !== "number") {
       throw new Error(`Firewall: invalid ${fieldName} value for ${JSON.stringify(key)}`);
     }
-    out[normalizeHarmfulOutcome(key, `${fieldName} key`)] = value;
+    out[normalizedKey] = value;
   }
   return Object.freeze(out);
 }
