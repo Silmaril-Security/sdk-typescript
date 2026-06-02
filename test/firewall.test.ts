@@ -73,7 +73,7 @@ function silmarilMetadata(
 ): Record<string, unknown> {
   return {
     sdk_language: "typescript",
-    sdk_version: "0.4.1",
+    sdk_version: "0.4.2",
     request_id: requestId,
     input_index: inputIndex,
     chunk_index: chunkIndex,

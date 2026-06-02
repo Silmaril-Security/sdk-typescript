@@ -2,6 +2,14 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.4.2 - 2026-06-02
+
+- Add typed firewall outcome constants, ordered outcome lists, descriptions,
+  type guards, and response normalizers.
+- Type `BlockResult.primaryOutcome`, `outcomeScores`, `detectorScores`, and
+  `detectorCounts` around the canonical outcome taxonomy.
+- Document simple outcome routing examples for direct `classify()` results.
+
 ## 0.4.1 - 2026-05-24
 
 - Recover the `0.4.x` npm release by moving to `0.4.1`. The `v0.4.0` Git tag

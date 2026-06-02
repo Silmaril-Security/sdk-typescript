@@ -22,7 +22,7 @@ import type {
 export const BASE_THRESHOLD = 0.5;
 export const TARGET_SEQUENCE_FPR = 0.01;
 export const MAX_ADAPTIVE_THRESHOLD = 0.9;
-export const SDK_VERSION = "0.4.1";
+export const SDK_VERSION = "0.4.2";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 export const DEFAULT_CHUNK_CONCURRENCY = 8;
 const DEFAULT_MAX_RETRIES = 5;
