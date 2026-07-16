@@ -4,9 +4,9 @@
 import { randomUUID } from "node:crypto";
 
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
-import { chunkText, sanitizeText } from "./chunking.js";
 import { SilmarilApiError } from "./exceptions.js";
 import { normalizeHarmfulOutcomeMap, normalizePrimaryOutcome } from "./outcomes.js";
+import { sanitizeText } from "./sanitization.js";
 import type {
   BlockResult,
   ClassifyBatchOptions,
@@ -19,12 +19,8 @@ import type {
   Prediction,
 } from "./types.js";
 
-export const BASE_THRESHOLD = 0.5;
-export const TARGET_SEQUENCE_FPR = 0.01;
-export const MAX_ADAPTIVE_THRESHOLD = 0.9;
-export const SDK_VERSION = "0.4.2";
+export const SDK_VERSION = "0.5.0";
 export const DEFAULT_TIMEOUT_MS = 10_000;
-export const DEFAULT_CHUNK_CONCURRENCY = 8;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
 const MAX_ERROR_BODY_BYTES = 1 << 16;
@@ -57,23 +53,10 @@ interface BatchClassifyResponse {
   predictions: readonly SingleClassifyResponse[];
 }
 
-/** @deprecated Thresholds are tenant-owned by the Firewall backend. */
-export function adaptiveThreshold(scoringOpportunityCount: number): number {
-  if (!Number.isInteger(scoringOpportunityCount) || scoringOpportunityCount < 1) {
-    throw new Error(
-      `Firewall: scoringOpportunityCount must be an integer >= 1, got ${scoringOpportunityCount}`,
-    );
-  }
-  if (scoringOpportunityCount === 1) {
-    return BASE_THRESHOLD;
-  }
-  const targetChunkFpr = 1 - Math.pow(1 - TARGET_SEQUENCE_FPR, 1 / scoringOpportunityCount);
-  const oddsRatio = TARGET_SEQUENCE_FPR / targetChunkFpr;
-  const rawThreshold = oddsRatio / (1 + oddsRatio);
-  return Math.min(rawThreshold, MAX_ADAPTIVE_THRESHOLD);
-}
-
 function blockResultFromResponse(data: SingleClassifyResponse): BlockResult {
+  if (data.prediction !== "BENIGN" && data.prediction !== "MALICIOUS") {
+    throw new Error("Firewall: response prediction must be BENIGN or MALICIOUS");
+  }
   const result: {
     prediction: Prediction;
     score: number;
@@ -119,9 +102,7 @@ function withSdkMetadata(
   metadata: ClassificationMetadata | undefined,
   info: {
     requestId: string;
-    inputIndex: number;
-    chunkIndex: number;
-    chunkCount: number;
+    inputIndex?: number;
   },
 ): ClassificationMetadata {
   const payload: Record<string, unknown> = { ...(metadata ?? {}) };
@@ -134,9 +115,7 @@ function withSdkMetadata(
     sdk_language: "typescript",
     sdk_version: SDK_VERSION,
     request_id: info.requestId,
-    input_index: info.inputIndex,
-    chunk_index: info.chunkIndex,
-    chunk_count: info.chunkCount,
+    ...(info.inputIndex === undefined ? {} : { input_index: info.inputIndex }),
   };
   return payload;
 }
@@ -181,43 +160,10 @@ async function readCappedErrorBody(response: Response): Promise<string> {
   return new TextDecoder().decode(body);
 }
 
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  task: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  let firstError: unknown;
-  const workerCount = Math.min(concurrency, items.length);
-
-  async function worker(): Promise<void> {
-    for (;;) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= items.length) {
-        return;
-      }
-      try {
-        results[index] = await task(items[index]!, index);
-      } catch (err) {
-        firstError ??= err;
-      }
-    }
-  }
-
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-  if (firstError !== undefined) {
-    throw firstError;
-  }
-  return results;
-}
-
 export class Firewall {
   readonly apiKey: string;
   readonly apiUrl: string;
   readonly timeoutMs: number;
-  readonly chunkConcurrency: number;
   readonly shadowMode: boolean;
 
   private readonly headers: Readonly<Record<string, string>>;
@@ -235,12 +181,6 @@ export class Firewall {
     if (typeof this.timeoutMs !== "number" || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 0) {
       throw new Error(`Firewall: timeoutMs must be a finite non-negative number, got ${this.timeoutMs}`);
     }
-    this.chunkConcurrency = options.chunkConcurrency ?? DEFAULT_CHUNK_CONCURRENCY;
-    if (!Number.isInteger(this.chunkConcurrency) || this.chunkConcurrency < 1) {
-      throw new Error(
-        `Firewall: chunkConcurrency must be an integer >= 1, got ${this.chunkConcurrency}`,
-      );
-    }
     this.shadowMode = options.shadowMode ?? false;
     this.headers = Object.freeze({
       "x-api-key": this.apiKey,
@@ -249,25 +189,8 @@ export class Firewall {
   }
 
   async classify(text: string, options: ClassifyOptions = {}): Promise<BlockResult> {
-    const chunks = chunkText(text);
     const requestId = options.requestId ?? randomUUID();
-    if (chunks.length === 1) {
-      return this.classifySingleChunk(chunks[0]!, options, {
-        requestId,
-        inputIndex: 0,
-        chunkIndex: 0,
-        chunkCount: 1,
-      });
-    }
-    const results = await mapWithConcurrency(chunks, this.chunkConcurrency, (chunk, index) =>
-      this.classifySingleChunk(chunk, options, {
-        requestId,
-        inputIndex: 0,
-        chunkIndex: index,
-        chunkCount: chunks.length,
-      }),
-    );
-    return results.reduce((best, r) => (r.score > best.score ? r : best));
+    return this.classifySingle(sanitizeText(text), options, { requestId });
   }
 
   async classifyBatch(
@@ -307,8 +230,6 @@ export class Firewall {
       withSdkMetadata(options.metadata?.[index], {
         requestId,
         inputIndex: index,
-        chunkIndex: 0,
-        chunkCount: 1,
       }),
     );
     const data = await this.postWithRetry<BatchClassifyResponse>(payload);
@@ -356,14 +277,11 @@ export class Firewall {
     throw new Error("Firewall: exhausted retries (unreachable)");
   }
 
-  private async classifySingleChunk(
+  private async classifySingle(
     text: string,
     options: ClassifyOptions,
     metadataInfo: {
       requestId: string;
-      inputIndex: number;
-      chunkIndex: number;
-      chunkCount: number;
     },
   ): Promise<BlockResult> {
     const payload: SingleClassifyPayload = { text };

@@ -2,6 +2,18 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.5.0 - 2026-07-15
+
+- Send every `classify()` input as one complete event without client chunking.
+- Preserve exact `metadata.conversationId` and emit one
+  `metadata.silmaril.request_id` per event.
+- Require the backend `prediction` field for enforcement while preserving
+  optional outcome scores.
+- Remove the public `sanitizeText`, `chunkText`, `MAX_INPUT_TOKENS`,
+  `CHUNK_WINDOW`, `CHUNK_OVERLAP`, `MAX_INPUT_CHARS`, `CHUNK_WINDOW_CHARS`,
+  `CHUNK_OVERLAP_CHARS`, and `DEFAULT_CHUNK_CONCURRENCY` exports, plus the
+  `FirewallOptions.chunkConcurrency` option.
+
 ## 0.4.2 - 2026-06-02
 
 - Add typed firewall outcome constants, ordered outcome lists, descriptions,

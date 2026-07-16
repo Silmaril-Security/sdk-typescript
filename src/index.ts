@@ -3,7 +3,6 @@
 
 export {
   Firewall,
-  DEFAULT_CHUNK_CONCURRENCY,
   DEFAULT_TIMEOUT_MS,
 } from "./firewall.js";
 
@@ -11,17 +10,6 @@ export { FirewallBlockedException, PromptBlockedException, SilmarilApiError } fr
 export type { MalformedInputDetails } from "./exceptions.js";
 
 export type { FirewallMiddleware } from "./adapters/vercel.js";
-
-export {
-  chunkText,
-  sanitizeText,
-  MAX_INPUT_TOKENS,
-  CHUNK_WINDOW,
-  CHUNK_OVERLAP,
-  MAX_INPUT_CHARS,
-  CHUNK_WINDOW_CHARS,
-  CHUNK_OVERLAP_CHARS,
-} from "./chunking.js";
 
 export {
   HookLabel,
