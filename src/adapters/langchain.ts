@@ -119,7 +119,7 @@ export async function createLangChainHandler(
       return;
     }
     const threshold = result.threshold;
-    const blocked = result.score >= threshold;
+    const blocked = result.prediction === "MALICIOUS";
     const commonEventFields = {
       hook: hookLabel,
       ...(toolName !== undefined ? { toolName } : {}),

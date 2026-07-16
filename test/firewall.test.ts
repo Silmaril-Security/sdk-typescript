@@ -2,11 +2,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_CHUNK_CONCURRENCY,
   DEFAULT_TIMEOUT_MS,
   Firewall,
   HookLabel,
-  MAX_INPUT_CHARS,
   Outcome,
   SilmarilApiError,
 } from "../src/index.js";
@@ -65,19 +63,12 @@ function withDefaultThresholds(body: unknown): unknown {
   return body;
 }
 
-function silmarilMetadata(
-  requestId: string,
-  inputIndex: number,
-  chunkIndex: number,
-  chunkCount: number,
-): Record<string, unknown> {
+function silmarilMetadata(requestId: string, inputIndex?: number): Record<string, unknown> {
   return {
     sdk_language: "typescript",
-    sdk_version: "0.4.2",
+    sdk_version: "0.5.0",
     request_id: requestId,
-    input_index: inputIndex,
-    chunk_index: chunkIndex,
-    chunk_count: chunkCount,
+    ...(inputIndex === undefined ? {} : { input_index: inputIndex }),
   };
 }
 
@@ -98,7 +89,6 @@ describe("Firewall constructor", () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     expect(fw.apiUrl).toBe(TEST_API_URL);
     expect(fw.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
-    expect(fw.chunkConcurrency).toBe(DEFAULT_CHUNK_CONCURRENCY);
     expect(fw.shadowMode).toBe(false);
   });
 
@@ -107,20 +97,11 @@ describe("Firewall constructor", () => {
       apiKey: "sk-test",
       apiUrl: "https://example.test/classify",
       timeoutMs: 5000,
-      chunkConcurrency: 3,
       shadowMode: true,
     });
     expect(fw.apiUrl).toBe("https://example.test/classify");
     expect(fw.timeoutMs).toBe(5000);
-    expect(fw.chunkConcurrency).toBe(3);
     expect(fw.shadowMode).toBe(true);
-  });
-
-  it("rejects invalid chunkConcurrency", () => {
-    expect(() => new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, chunkConcurrency: 0 }))
-      .toThrow(/chunkConcurrency must be an integer >= 1/);
-    expect(() => new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, chunkConcurrency: 1.5 }))
-      .toThrow(/chunkConcurrency must be an integer >= 1/);
   });
 
   it("rejects invalid timeoutMs", () => {
@@ -157,7 +138,7 @@ describe("Firewall.classify", () => {
     expect(headers["content-type"]).toBe("application/json");
     expect(calls[0]!.body).toEqual({
       text: "hello world",
-      metadata: { silmaril: silmarilMetadata("req-single", 0, 0, 1) },
+      metadata: { silmaril: silmarilMetadata("req-single") },
     });
   });
 
@@ -187,6 +168,15 @@ describe("Firewall.classify", () => {
       detectorScores: { [Outcome.SecretExposure]: 1.0 },
       detectorCounts: { [Outcome.SecretExposure]: 2 },
     });
+  });
+
+  it("requires a valid backend prediction", async () => {
+    mockFetch([{ status: 200, body: { score: 0.99, threshold: 0.5 } }]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    await expect(fw.classify("missing prediction")).rejects.toThrow(
+      /response prediction must be BENIGN or MALICIOUS/,
+    );
   });
 
   it("decodes future Sapphire outcome labels", async () => {
@@ -256,7 +246,7 @@ describe("Firewall.classify", () => {
       text: "suspicious email body",
       hook: "tool_response",
       tool_name: "read_email",
-      metadata: { silmaril: silmarilMetadata("req-hook", 0, 0, 1) },
+      metadata: { silmaril: silmarilMetadata("req-hook") },
     });
   });
 
@@ -277,7 +267,7 @@ describe("Firewall.classify", () => {
       metadata: {
         run_id: "run-123",
         secret_candidate: "sk-test-secret",
-        silmaril: silmarilMetadata("req-meta", 0, 0, 1),
+        silmaril: silmarilMetadata("req-meta"),
       },
     });
   });
@@ -367,8 +357,8 @@ describe("Firewall.classifyBatch", () => {
     expect(calls[0]!.body).toEqual({
       texts: ["a", "b"],
       metadata: [
-        { silmaril: silmarilMetadata("batch-req", 0, 0, 1) },
-        { silmaril: silmarilMetadata("batch-req", 1, 0, 1) },
+        { silmaril: silmarilMetadata("batch-req", 0) },
+        { silmaril: silmarilMetadata("batch-req", 1) },
       ],
     });
   });
@@ -392,8 +382,8 @@ describe("Firewall.classifyBatch", () => {
     expect(calls[0]!.body).toEqual({
       texts: ["bad  value", "ok 😀 "],
       metadata: [
-        { silmaril: silmarilMetadata("sanitize-req", 0, 0, 1) },
-        { silmaril: silmarilMetadata("sanitize-req", 1, 0, 1) },
+        { silmaril: silmarilMetadata("sanitize-req", 0) },
+        { silmaril: silmarilMetadata("sanitize-req", 1) },
       ],
     });
   });
@@ -446,7 +436,7 @@ describe("Firewall.classifyBatch", () => {
       texts: ["a"],
       hooks: ["tool_response"],
       tool_names: ["read_file"],
-      metadata: [{ silmaril: silmarilMetadata("hooks-req", 0, 0, 1) }],
+      metadata: [{ silmaril: silmarilMetadata("hooks-req", 0) }],
     });
   });
 
@@ -470,8 +460,8 @@ describe("Firewall.classifyBatch", () => {
     expect(calls[0]!.body).toEqual({
       texts: ["a", "b"],
       metadata: [
-        { run_id: "run-a", silmaril: silmarilMetadata("metadata-req", 0, 0, 1) },
-        { silmaril: silmarilMetadata("metadata-req", 1, 0, 1) },
+        { run_id: "run-a", silmaril: silmarilMetadata("metadata-req", 0) },
+        { silmaril: silmarilMetadata("metadata-req", 1) },
       ],
     });
   });
@@ -492,8 +482,8 @@ describe("Firewall.classifyBatch", () => {
       texts: ["a", "b"],
       tool_names: ["read_file", null],
       metadata: [
-        { silmaril: silmarilMetadata("tools-req", 0, 0, 1) },
-        { silmaril: silmarilMetadata("tools-req", 1, 0, 1) },
+        { silmaril: silmarilMetadata("tools-req", 0) },
+        { silmaril: silmarilMetadata("tools-req", 1) },
       ],
     });
   });
@@ -555,7 +545,7 @@ describe("Firewall.classifyBatch", () => {
   });
 });
 
-describe("Firewall.classify — chunking", () => {
+describe("Firewall.classify — complete events", () => {
   let originalFetch: typeof fetch;
 
   beforeEach(() => {
@@ -566,156 +556,45 @@ describe("Firewall.classify — chunking", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("sends a single text when input is within one chunk", async () => {
-    const { calls } = mockFetch([{ status: 200, body: { prediction: "BENIGN", score: 0.1 } }]);
+  it("sends an event above the former chunk boundary exactly once", async () => {
+    const { calls } = mockFetch([
+      { status: 200, body: { prediction: "BENIGN", score: 0.2, threshold: 0.75 } },
+    ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    await fw.classify("short", { requestId: "short-req" });
+    const longText = "a".repeat(4001);
+    const result = await fw.classify(longText, { requestId: "long-event" });
+
+    expect(result).toEqual({ prediction: "BENIGN", score: 0.2, threshold: 0.75 });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.body).toEqual({
-      text: "short",
-      metadata: { silmaril: silmarilMetadata("short-req", 0, 0, 1) },
+      text: longText,
+      metadata: { silmaril: silmarilMetadata("long-event") },
     });
   });
 
-  it("fans out chunk requests and aggregates the max score across chunks", async () => {
+  it("preserves exact conversationId and emits no chunk metadata", async () => {
     const { calls } = mockFetch([
-      {
-        status: 200,
-        body: { prediction: "BENIGN", score: 0.2, threshold: 0.75 },
-      },
-      {
-        status: 200,
-        body: { prediction: "MALICIOUS", score: 0.95, threshold: 0.75 },
-      },
-      {
-        status: 200,
-        body: { prediction: "BENIGN", score: 0.4, threshold: 0.75 },
-      },
+      { status: 200, body: { prediction: "BENIGN", score: 0.1 } },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    // 1600 chars/window, 256 overlap -> 1344 stride. 4001 chars makes 3 chunks.
-    const longText = "a".repeat(4001);
-    const result = await fw.classify(longText, { requestId: "chunk-req" });
-    expect(result.prediction).toBe("MALICIOUS");
-    expect(result.score).toBe(0.95);
-    expect(result.threshold).toBe(0.75);
-    expect(calls).toHaveLength(3);
-    for (const [index, call] of calls.entries()) {
-      expect(call.body).toHaveProperty("text");
-      expect(call.body).not.toHaveProperty("texts");
-      expect(call.body).not.toHaveProperty("threshold");
-      expect((call.body as { metadata: { silmaril: unknown } }).metadata.silmaril).toEqual(
-        silmarilMetadata("chunk-req", 0, index, 3),
-      );
-    }
-  });
-
-  it("propagates the hook to every chunk request", async () => {
-    const { calls } = mockFetch([
-      {
-        status: 200,
-        body: { prediction: "BENIGN", score: 0.1 },
-      },
-      {
-        status: 200,
-        body: { prediction: "BENIGN", score: 0.2 },
-      },
-    ]);
-    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    const text = "b".repeat(2000);
-    await fw.classify(text, { hook: HookLabel.TOOL_RESPONSE, requestId: "hook-chunk-req" });
-    expect(calls.length).toBeGreaterThan(1);
-    for (const [index, call] of calls.entries()) {
-      expect(call.body).toMatchObject({ hook: "tool_response" });
-      expect(call.body).not.toHaveProperty("threshold");
-      expect((call.body as { metadata: { silmaril: unknown } }).metadata.silmaril).toEqual(
-        silmarilMetadata("hook-chunk-req", 0, index, calls.length),
-      );
-      expect(call.body).not.toHaveProperty("texts");
-    }
-  });
-
-  it("propagates metadata to every chunk request", async () => {
-    const { calls } = mockFetch([
-      {
-        status: 200,
-        body: { prediction: "BENIGN", score: 0.1 },
-      },
-      {
-        status: 200,
-        body: { prediction: "BENIGN", score: 0.2 },
-      },
-    ]);
-    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    const text = "d".repeat(2000);
-    const metadata = { run_id: "run-chunked", secret_candidate: "sk-test-secret" };
-    await fw.classify(text, {
+    await fw.classify("d".repeat(2000), {
       hook: HookLabel.TOOL_RESPONSE,
-      metadata,
-      requestId: "metadata-chunk-req",
+      toolName: "search_workspace",
+      metadata: { conversationId: "conversation-123", conversation_id: "inert" },
+      requestId: "event-uuid",
     });
-    expect(calls.length).toBeGreaterThan(1);
-    for (const [index, call] of calls.entries()) {
-      expect(call.body).toMatchObject({ hook: "tool_response" });
-      expect((call.body as { metadata: Record<string, unknown> }).metadata.run_id).toBe(
-        "run-chunked",
-      );
-      expect((call.body as { metadata: Record<string, unknown> }).metadata.secret_candidate).toBe(
-        "sk-test-secret",
-      );
-      expect((call.body as { metadata: { silmaril: unknown } }).metadata.silmaril).toEqual(
-        silmarilMetadata("metadata-chunk-req", 0, index, calls.length),
-      );
-      expect(call.body).not.toHaveProperty("threshold");
-      expect(call.body).not.toHaveProperty("texts");
-    }
-  });
 
-  it("limits chunk fanout concurrency", async () => {
-    let active = 0;
-    let maxActive = 0;
-    let calls = 0;
-    globalThis.fetch = (async (_url: string | URL, init: RequestInit): Promise<Response> => {
-      JSON.parse(init.body as string);
-      calls += 1;
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      active -= 1;
-      return {
-        ok: true,
-        status: 200,
-        statusText: "status-200",
-        json: async () => ({ prediction: "BENIGN", score: 0.1, threshold: 0.5 }),
-        text: async () => "",
-      } as unknown as Response;
-    }) as unknown as typeof fetch;
-    const fw = new Firewall({
-      apiKey: "sk-test",
-      apiUrl: TEST_API_URL,
-      chunkConcurrency: 2,
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toMatchObject({
+      hook: "tool_response",
+      tool_name: "search_workspace",
+      metadata: {
+        conversationId: "conversation-123",
+        conversation_id: "inert",
+        silmaril: silmarilMetadata("event-uuid"),
+      },
     });
-    await fw.classify("e".repeat(8000));
-    expect(calls).toBeGreaterThan(2);
-    expect(maxActive).toBeLessThanOrEqual(2);
-  });
-
-  it("propagates chunk request errors", async () => {
-    const { calls } = mockFetch([
-      { status: 500, body: "boom" },
-      { status: 200, body: { prediction: "BENIGN", score: 0.1 } },
-      { status: 200, body: { prediction: "BENIGN", score: 0.1 } },
-    ]);
-    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    await expect(fw.classify("f".repeat(4001))).rejects.toBeInstanceOf(SilmarilApiError);
-    expect(calls).toHaveLength(3);
-  });
-
-  it("throws when input exceeds MAX_INPUT_CHARS", async () => {
-    mockFetch([{ status: 200, body: { prediction: "BENIGN", score: 0 } }]);
-    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
-    const tooLong = "c".repeat(MAX_INPUT_CHARS + 1);
-    await expect(fw.classify(tooLong)).rejects.toThrow(/tokens.*chars/);
+    expect(JSON.stringify(calls[0]!.body)).not.toContain("chunk_");
   });
 });
 

@@ -20,8 +20,8 @@ This SDK provides the low-level TypeScript interface for that workflow:
 - Preserve hook and tool-name context for more accurate decisions.
 - Enforce backend-owned adaptive thresholds in adapters, with shadow mode for
   observation-only rollout.
-- Chunk long inputs consistently before they reach the API.
-- Send SDK metadata that lets the Firewall reconstruct chunked payloads.
+- Send each complete sanitized event in one request.
+- Preserve exact `metadata.conversationId` sequence identity and add one event ID.
 - Retry API rate-limit responses.
 - Optionally attach the firewall to Vercel AI SDK middleware and LangChain.js
   callback flows.
@@ -37,7 +37,7 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.4.2
+npm install @silmaril-security/sdk@0.5.0
 ```
 
 Requires Node 18 or later.
@@ -129,7 +129,7 @@ const result = await fw.classify(userInput, {
   hook: HookLabel.USER_INPUT,
 });
 
-if (result.score < result.threshold) {
+if (result.prediction === "BENIGN") {
   continueNormally();
 } else {
   switch (result.primaryOutcome) {
@@ -170,7 +170,6 @@ interface FirewallOptions {
   apiKey: string;                                     // required
   apiUrl: string;                                     // required
   timeoutMs?: number;                                 // default: 10000 ms
-  chunkConcurrency?: number;                          // default: 8
   shadowMode?: boolean;                               // adapter observation mode
 }
 ```
@@ -187,16 +186,15 @@ the adaptive threshold schedule. The default backend config is
 opportunity uses `0.5`, 2 use about `0.6661`, 5 use about `0.8328`, and 10 or
 more are capped at `0.9`.
 
-The SDK no longer sends `threshold` in request payloads. It sends chunk
-metadata instead, and the backend combines tenant config, active batch size,
-and chunk count to decide the threshold. The applied value remains available on
+The SDK does not send `threshold` in request payloads. The backend owns the
+applied threshold, which remains available on
 `BlockResult.threshold` and `FirewallBlockedException.threshold` as diagnostic
 metadata.
 
 ## Shadow Mode
 
-The Vercel AI SDK and LangChain.js adapters enforce thresholds by default.
-Shadow mode keeps the same classification and threshold logic but suppresses
+The Vercel AI SDK and LangChain.js adapters enforce backend predictions by default.
+Shadow mode keeps the same classification result but suppresses
 `FirewallBlockedException`, so live traffic can continue while telemetry records
 what would have blocked:
 
@@ -243,8 +241,8 @@ await fw.asLangChainHandler({
 ```
 
 `ClassifyEvent` includes `hook`, `toolName`, `toolCallId`, `runId`, `text`,
-`result`, `blocked`, and `shadowMode`. `blocked` is computed from
-`result.score >= result.threshold`. Direct `classify()` and `classifyBatch()`
+`result`, `blocked`, and `shadowMode`. `blocked` is true only when the backend
+returns `prediction: "MALICIOUS"`. Direct `classify()` and `classifyBatch()`
 calls never throw on verdicts and are unaffected by shadow mode.
 
 ## Hook Labels
@@ -283,10 +281,9 @@ await fw.classify(text, {
 
 The SDK preserves caller metadata and adds a reserved `metadata.silmaril`
 namespace to every request. SDK-controlled fields are `sdk_language`,
-`sdk_version`, `request_id`, `input_index`, `chunk_index`, and `chunk_count`.
-Single unchunked requests use `input_index=0`, `chunk_index=0`, and
-`chunk_count=1`; batches use one metadata object per input; chunked requests
-reuse a single request id across all chunks. If callers provide
+`sdk_version`, and `request_id`; batches additionally carry `input_index` for
+diagnostics and remain stateless. Exact `metadata.conversationId` is preserved
+as the backend sequence identity. No aliases are inspected. If callers provide
 `metadata.silmaril`, it must be an object and SDK-reserved keys are overwritten
 by the SDK.
 
@@ -299,18 +296,12 @@ by the SDK.
 
 All SDK exception types extend `Error` and work with `instanceof`.
 
-## Chunking
+## Complete events
 
-Long inputs are chunked client-side into 400-token overlapping windows
-(64-token overlap). The maximum input is 81,920 tokens. For `classify()`, chunks
-are sent as bounded parallel single-text requests using `chunkConcurrency`
-(default: 8), letting API Gateway and SageMaker distribute work across serving
-instances. The highest score is returned.
-
-Set `chunkConcurrency: 1` to send chunk requests sequentially. `classifyBatch()`
-continues to send independent texts as one batch request.
-
-`chunkText()` is exported if you need to chunk manually.
+`classify()` sanitizes invalid Unicode surrogate fragments and sends the full
+logical event once. The backend owns token-window processing and sequence
+ordering. `classifyBatch()` continues to send independent stateless texts as one
+batch request.
 
 ## Batch Classification
 

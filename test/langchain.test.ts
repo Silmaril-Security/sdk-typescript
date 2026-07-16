@@ -145,13 +145,13 @@ describe("LangChain adapter — input hooks", () => {
     ).rejects.toBeInstanceOf(PromptBlockedException);
   });
 
-  it("uses the returned threshold for enforcement", async () => {
+  it("uses backend prediction even when score is below threshold", async () => {
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
     });
     firewall.classify = vi.fn(async () =>
-      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.3, threshold: 0.2 }),
+      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.1, threshold: 0.9 }),
     ) as typeof firewall.classify;
     const handler = (await createLangChainHandler(firewall, { hooks: ALL_HOOKS })) as unknown as {
       handleToolEnd: (

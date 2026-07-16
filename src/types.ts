@@ -20,7 +20,6 @@ export interface FirewallOptions {
   apiKey: string;
   apiUrl: string;
   timeoutMs?: number;
-  chunkConcurrency?: number;
   shadowMode?: boolean;
 }
 

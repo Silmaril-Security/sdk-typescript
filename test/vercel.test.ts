@@ -150,13 +150,13 @@ describe("Vercel middleware — wrapGenerate", () => {
     expect(onBlocked.mock.calls[0]![0]).toBeInstanceOf(PromptBlockedException);
   });
 
-  it("uses the returned threshold for enforcement", async () => {
+  it("uses backend prediction even when score is below threshold", async () => {
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
     });
     firewall.classify = vi.fn(async () =>
-      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.5, threshold: 0.3 }),
+      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.1, threshold: 0.9 }),
     ) as typeof firewall.classify;
     const middleware = createMiddleware(firewall);
     await expect(

@@ -175,7 +175,7 @@ export function createMiddleware(
       toolName !== undefined ? { hook, toolName } : { hook },
     );
     const threshold = result.threshold;
-    const blocked = result.score >= threshold;
+    const blocked = result.prediction === "MALICIOUS";
     const commonEventFields = {
       hook,
       ...(toolName !== undefined ? { toolName } : {}),
