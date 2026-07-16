@@ -9,6 +9,10 @@ All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
   `metadata.silmaril.request_id` per event.
 - Require the backend `prediction` field for enforcement while preserving
   optional outcome scores.
+- Remove the public `sanitizeText`, `chunkText`, `MAX_INPUT_TOKENS`,
+  `CHUNK_WINDOW`, `CHUNK_OVERLAP`, `MAX_INPUT_CHARS`, `CHUNK_WINDOW_CHARS`,
+  `CHUNK_OVERLAP_CHARS`, and `DEFAULT_CHUNK_CONCURRENCY` exports, plus the
+  `FirewallOptions.chunkConcurrency` option.
 
 ## 0.4.2 - 2026-06-02
 
