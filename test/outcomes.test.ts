@@ -21,6 +21,12 @@ describe("outcomes", () => {
       Outcome.ControlAbuse,
       Outcome.SystemCompromise,
       Outcome.ServiceDisruption,
+      Outcome.CodeGeneration,
+      Outcome.StoryScriptGeneration,
+      Outcome.GameGeneration,
+      Outcome.WebsiteGeneration,
+      Outcome.ClickUpTermsViolation,
+      Outcome.TraditionalAiAbuse,
     ]);
     expect(HARMFUL_OUTCOMES).toEqual(PRIMARY_OUTCOMES.slice(1));
     for (const outcome of PRIMARY_OUTCOMES) {
