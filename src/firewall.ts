@@ -19,7 +19,7 @@ import type {
   Prediction,
 } from "./types.js";
 
-export const SDK_VERSION = "0.5.0";
+export const SDK_VERSION = "0.5.1";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;

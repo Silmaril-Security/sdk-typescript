@@ -66,7 +66,7 @@ function withDefaultThresholds(body: unknown): unknown {
 function silmarilMetadata(requestId: string, inputIndex?: number): Record<string, unknown> {
   return {
     sdk_language: "typescript",
-    sdk_version: "0.5.0",
+    sdk_version: "0.5.1",
     request_id: requestId,
     ...(inputIndex === undefined ? {} : { input_index: inputIndex }),
   };
