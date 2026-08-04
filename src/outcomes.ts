@@ -8,6 +8,12 @@ export const Outcome = {
   ControlAbuse: "control_abuse",
   SystemCompromise: "system_compromise",
   ServiceDisruption: "service_disruption",
+  CodeGeneration: "code_generation",
+  StoryScriptGeneration: "story_script_generation",
+  GameGeneration: "game_generation",
+  WebsiteGeneration: "website_generation",
+  ClickUpTermsViolation: "clickup_terms_violation",
+  TraditionalAiAbuse: "traditional_ai_abuse",
 } as const;
 
 declare const unknownOutcomeBrand: unique symbol;
@@ -25,6 +31,12 @@ export const PRIMARY_OUTCOMES = [
   Outcome.ControlAbuse,
   Outcome.SystemCompromise,
   Outcome.ServiceDisruption,
+  Outcome.CodeGeneration,
+  Outcome.StoryScriptGeneration,
+  Outcome.GameGeneration,
+  Outcome.WebsiteGeneration,
+  Outcome.ClickUpTermsViolation,
+  Outcome.TraditionalAiAbuse,
 ] as const satisfies readonly PrimaryOutcome[];
 
 export const HARMFUL_OUTCOMES = [
@@ -33,6 +45,12 @@ export const HARMFUL_OUTCOMES = [
   Outcome.ControlAbuse,
   Outcome.SystemCompromise,
   Outcome.ServiceDisruption,
+  Outcome.CodeGeneration,
+  Outcome.StoryScriptGeneration,
+  Outcome.GameGeneration,
+  Outcome.WebsiteGeneration,
+  Outcome.ClickUpTermsViolation,
+  Outcome.TraditionalAiAbuse,
 ] as const satisfies readonly KnownHarmfulOutcome[];
 
 export const OUTCOME_DESCRIPTIONS = {
@@ -47,6 +65,18 @@ export const OUTCOME_DESCRIPTIONS = {
     "Enables privilege escalation, account takeover, hostile integration or plugin takeover, persistence, lateral movement, attacker webhook registration, or code/plugin execution.",
   [Outcome.ServiceDisruption]:
     "Causes downtime, lockout, degradation, alert suppression, destructive loops, resource exhaustion, cost spikes, or hidden outage evidence.",
+  [Outcome.CodeGeneration]:
+    "Requests generation or material modification of executable code, scripts, workflows, or configuration.",
+  [Outcome.StoryScriptGeneration]:
+    "Requests generation of narrative prose, dialogue, scripts, or story artifacts.",
+  [Outcome.GameGeneration]:
+    "Requests generation of a game, quest, level, mechanic, or playable experience.",
+  [Outcome.WebsiteGeneration]:
+    "Requests generation of a website, landing page, storefront, or web experience.",
+  [Outcome.ClickUpTermsViolation]:
+    "Requests content or actions that violate the configured ClickUp tenant policy.",
+  [Outcome.TraditionalAiAbuse]:
+    "Requests unsafe AI assistance outside the concrete security outcome classes.",
 } as const satisfies Readonly<Record<KnownPrimaryOutcome, string>>;
 
 const PRIMARY_OUTCOME_SET = new Set<string>(PRIMARY_OUTCOMES);
