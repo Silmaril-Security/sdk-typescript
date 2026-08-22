@@ -18,8 +18,8 @@ This SDK provides the low-level TypeScript interface for that workflow:
 - Classify user input, tool calls, tool responses, model output, or system
   prompt content.
 - Preserve hook and tool-name context for more accurate decisions.
-- Enforce backend-owned adaptive thresholds in adapters, with shadow mode for
-  observation-only rollout.
+- Enforce backend-owned adaptive thresholds and effective Shadow, Warn, or
+  Block behavior in adapters.
 - Send each complete sanitized event in one request.
 - Preserve exact `metadata.conversationId` sequence identity and add one event ID.
 - Retry API rate-limit responses.
@@ -37,7 +37,7 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.5.1
+npm install @silmaril-security/sdk@0.6.0
 ```
 
 Requires Node 18 or later.
@@ -184,7 +184,8 @@ interface FirewallOptions {
   apiKey: string;                                     // required
   apiUrl: string;                                     // required
   timeoutMs?: number;                                 // default: 10000 ms
-  shadowMode?: boolean;                               // adapter observation mode
+  mode?: "shadow" | "warn" | "block";                // omitted uses backend configuration
+  shadowMode?: boolean;                               // deprecated legacy mapping
 }
 ```
 
@@ -205,12 +206,12 @@ applied threshold, which remains available on
 `BlockResult.threshold` and `FirewallBlockedException.threshold` as diagnostic
 metadata.
 
-## Shadow Mode
+## Modes
 
-The Vercel AI SDK and LangChain.js adapters enforce backend predictions by default.
-Shadow mode keeps the same classification result but suppresses
-`FirewallBlockedException`, so live traffic can continue while telemetry records
-what would have blocked:
+Use `shadow`, `warn`, or `block` only when a request needs to override the
+backend-configured mode. Shadow and Warn preserve the framework flow; Block
+throws `FirewallBlockedException` for a malicious decision. Every result and
+adapter event includes the backend-returned effective mode:
 
 ```ts
 import { wrapLanguageModel, generateText } from "ai";
@@ -220,7 +221,7 @@ import { Firewall } from "@silmaril-security/sdk";
 const fw = new Firewall({
   apiKey: process.env.SILMARIL_API_KEY!,
   apiUrl: process.env.SILMARIL_API_URL!,
-  shadowMode: true,
+  mode: "shadow",
 });
 
 const model = wrapLanguageModel({
@@ -241,23 +242,25 @@ const model = wrapLanguageModel({
 await generateText({ model, prompt: "Hello" });
 ```
 
-Per-adapter `shadowMode` options let you enforce or shadow one surface without
-changing the client default:
+Per-adapter options let you override one surface without changing the client
+default:
 
 ```ts
 fw.asMiddleware({
-  shadowMode: false, // enforce even if the client shadows
+  mode: "block",
 });
 
 await fw.asLangChainHandler({
-  shadowMode: true, // observe this handler only
+  mode: "warn",
 });
 ```
 
-`ClassifyEvent` includes `hook`, `toolName`, `toolCallId`, `runId`, `text`,
-`result`, `blocked`, and `shadowMode`. `blocked` is true only when the backend
-returns `prediction: "MALICIOUS"`. Direct `classify()` and `classifyBatch()`
-calls never throw on verdicts and are unaffected by shadow mode.
+Legacy `shadowMode: true` maps to Shadow and `shadowMode: false` maps to Block;
+explicit `mode` takes precedence. `ClassifyEvent` includes `hook`, `toolName`,
+`toolCallId`, `runId`, `text`, `result`, `blocked`, `mode`, and `shadowMode`.
+`blocked` records a malicious decision; only effective Block mode throws from
+an adapter. Direct `classify()` and `classifyBatch()` return decisions without
+throwing.
 
 ## Hook Labels
 
@@ -304,7 +307,7 @@ by the SDK.
 ## Errors
 
 - `SilmarilApiError`: thrown when the firewall API responds with a non-2xx or redirect status. Carries `status`, `statusText`, a 64 KiB-capped `body`, and any parsed malformed-input diagnostics. The default error message omits the body to keep logs clean.
-- `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters in enforcement mode when the backend blocks the request. Carries `score`, `threshold`, `promptText`, and optional `runId`, `hook`, `toolName`, `toolCallId`, and `result`.
+- `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters when a malicious decision has effective Block mode. Carries `score`, `threshold`, `promptText`, and optional `runId`, `hook`, `toolName`, `toolCallId`, and `result`.
 
 `PromptBlockedException` remains as a deprecated alias for one release.
 

@@ -159,7 +159,11 @@ export function createMiddleware(
 ): FirewallMiddleware {
   const scanInput = options.scanInput ?? true;
   const scanOutput = options.scanOutput ?? false;
-  const shadowMode = options.shadowMode ?? firewall.shadowMode;
+  const requestedMode = options.mode ?? (
+    options.shadowMode === undefined
+      ? firewall.mode
+      : options.shadowMode ? "shadow" : "block"
+  );
 
   const classifyOrBlock = async (
     text: string,
@@ -172,10 +176,15 @@ export function createMiddleware(
     const { toolName, toolCallId } = context;
     const result: BlockResult = await firewall.classify(
       text,
-      toolName !== undefined ? { hook, toolName } : { hook },
+      {
+        hook,
+        ...(toolName !== undefined ? { toolName } : {}),
+        ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
+      },
     );
     const threshold = result.threshold;
     const blocked = result.prediction === "MALICIOUS";
+    const effectiveMode = result.mode;
     const commonEventFields = {
       hook,
       ...(toolName !== undefined ? { toolName } : {}),
@@ -186,9 +195,10 @@ export function createMiddleware(
     options.onClassify?.({
       ...commonEventFields,
       blocked,
-      shadowMode,
+      mode: effectiveMode,
+      shadowMode: effectiveMode === "shadow",
     });
-    if (!blocked || shadowMode) {
+    if (!blocked || effectiveMode !== "block") {
       return;
     }
 

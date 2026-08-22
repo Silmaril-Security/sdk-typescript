@@ -85,7 +85,11 @@ export async function createLangChainHandler(
       // eslint-disable-next-line no-console
       console.warn(`silmaril.firewall: ${message}`, error);
     });
-  const shadowMode = options.shadowMode ?? firewall.shadowMode;
+  const requestedMode = options.mode ?? (
+    options.shadowMode === undefined
+      ? firewall.mode
+      : options.shadowMode ? "shadow" : "block"
+  );
   const onClassify = options.onClassify;
 
   const fireOnClassify = (event: ClassifyEvent): void => {
@@ -109,6 +113,7 @@ export async function createLangChainHandler(
     try {
       result = await firewall.classify(text, {
         hook: hookLabel,
+        ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
         ...(toolName !== undefined ? { toolName } : {}),
       });
     } catch (err) {
@@ -120,6 +125,7 @@ export async function createLangChainHandler(
     }
     const threshold = result.threshold;
     const blocked = result.prediction === "MALICIOUS";
+    const effectiveMode = result.mode;
     const commonEventFields = {
       hook: hookLabel,
       ...(toolName !== undefined ? { toolName } : {}),
@@ -130,9 +136,10 @@ export async function createLangChainHandler(
     fireOnClassify({
       ...commonEventFields,
       blocked,
-      shadowMode,
+      mode: effectiveMode,
+      shadowMode: effectiveMode === "shadow",
     });
-    if (!blocked || shadowMode) {
+    if (!blocked || effectiveMode !== "block") {
       return;
     }
 

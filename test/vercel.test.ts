@@ -23,7 +23,12 @@ function makeFirewall(
     calls.push({ text, hook: options?.hook, toolName: options?.toolName });
     const r = scores[Math.min(i, scores.length - 1)];
     i++;
-    return Object.freeze({ prediction: r!.prediction, score: r!.score, threshold: r!.threshold ?? 0.5 });
+    return Object.freeze({
+      prediction: r!.prediction,
+      score: r!.score,
+      threshold: r!.threshold ?? 0.5,
+      mode: options?.mode ?? firewall.mode ?? "block",
+    });
   }) as typeof firewall.classify;
   return { firewall, calls };
 }
@@ -156,7 +161,12 @@ describe("Vercel middleware — wrapGenerate", () => {
       apiUrl: "https://api.test.invalid/classify",
     });
     firewall.classify = vi.fn(async () =>
-      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.1, threshold: 0.9 }),
+      Object.freeze({
+        prediction: "MALICIOUS" as const,
+        score: 0.1,
+        threshold: 0.9,
+        mode: "block" as const,
+      }),
     ) as typeof firewall.classify;
     const middleware = createMiddleware(firewall);
     await expect(
@@ -452,7 +462,12 @@ describe("Vercel middleware — shadow mode", () => {
       calls.push({ text, hook: options?.hook, toolName: options?.toolName });
       const r = scores[Math.min(i, scores.length - 1)];
       i++;
-      return Object.freeze({ prediction: r!.prediction, score: r!.score, threshold: r!.threshold ?? 0.5 });
+      return Object.freeze({
+        prediction: r!.prediction,
+        score: r!.score,
+        threshold: r!.threshold ?? 0.5,
+        mode: options?.mode ?? firewall.mode ?? "block",
+      });
     }) as typeof firewall.classify;
     return { firewall, calls };
   }
@@ -489,6 +504,29 @@ describe("Vercel middleware — shadow mode", () => {
     });
     expect(doGenerate).toHaveBeenCalledOnce();
     expect(events).toEqual([{ blocked: true, shadowMode: true }]);
+  });
+
+  it("effective warn mode preserves generation and is exposed on events", async () => {
+    const { firewall } = makeShadowFirewall(
+      [{ prediction: "MALICIOUS", score: 0.97 }],
+      false,
+    );
+    firewall.classify = vi.fn(async () => Object.freeze({
+      prediction: "MALICIOUS" as const,
+      score: 0.97,
+      threshold: 0.5,
+      mode: "warn" as const,
+    })) as typeof firewall.classify;
+    const events: Array<{ mode: string; shadowMode: boolean }> = [];
+    const middleware = createMiddleware(firewall, {
+      onClassify: (event) => events.push({ mode: event.mode, shadowMode: event.shadowMode }),
+    });
+
+    await expect(middleware.wrapGenerate({
+      params: { prompt: [{ role: "user", content: "payload" }] },
+      doGenerate: vi.fn(async () => ({ text: "preserved" })),
+    })).resolves.toMatchObject({ text: "preserved" });
+    expect(events).toEqual([{ mode: "warn", shadowMode: false }]);
   });
 
   it("middleware shadowMode: false overrides firewall shadowMode: true (enforce)", async () => {
