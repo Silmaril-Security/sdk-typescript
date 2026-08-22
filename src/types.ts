@@ -5,11 +5,14 @@ import type { FirewallHook, HookLabel } from "./hooks.js";
 import type { HarmfulOutcome, PrimaryOutcome } from "./outcomes.js";
 
 export type Prediction = "BENIGN" | "MALICIOUS";
+export type FirewallMode = "shadow" | "warn" | "block";
 
 export interface BlockResult {
   readonly prediction: Prediction;
   readonly score: number;
   readonly threshold: number;
+  /** Omitted only when a legacy backend did not return mode and no override was requested. */
+  readonly mode?: FirewallMode;
   readonly primaryOutcome?: PrimaryOutcome;
   readonly outcomeScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
   readonly detectorScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
@@ -20,12 +23,15 @@ export interface FirewallOptions {
   apiKey: string;
   apiUrl: string;
   timeoutMs?: number;
+  mode?: FirewallMode;
+  /** @deprecated Use mode: "shadow" or mode: "block". */
   shadowMode?: boolean;
 }
 
 export type ClassificationMetadata = Readonly<Record<string, unknown>>;
 
 export interface ClassifyOptions {
+  mode?: FirewallMode;
   hook?: HookLabel;
   toolName?: string;
   metadata?: ClassificationMetadata;
@@ -33,6 +39,7 @@ export interface ClassifyOptions {
 }
 
 export interface ClassifyBatchOptions {
+  mode?: FirewallMode;
   hooks?: readonly HookLabel[];
   toolNames?: readonly (string | undefined)[];
   metadata?: readonly (ClassificationMetadata | undefined)[];
@@ -45,6 +52,8 @@ export interface LangChainAdapterOptions {
   includeTool?: boolean;
   failOpen?: boolean;
   logger?: (message: string, error: unknown) => void;
+  mode?: FirewallMode;
+  /** @deprecated Use mode: "shadow" or mode: "block". */
   shadowMode?: boolean;
   onClassify?: (event: ClassifyEvent) => void;
 }
@@ -70,6 +79,7 @@ export interface ClassifyEvent {
   readonly text: string;
   readonly result: BlockResult;
   readonly blocked: boolean;
+  readonly mode: FirewallMode;
   readonly shadowMode: boolean;
 }
 
@@ -77,6 +87,8 @@ export interface MiddlewareOptions {
   scanInput?: boolean;
   scanOutput?: boolean;
   scanToolCalls?: boolean;
+  mode?: FirewallMode;
+  /** @deprecated Use mode: "shadow" or mode: "block". */
   shadowMode?: boolean;
   onBlocked?: (err: Error) => void;
   onClassify?: (event: ClassifyEvent) => void;

@@ -29,7 +29,12 @@ function makeFirewall(
     if (r instanceof Error) {
       throw r;
     }
-    return Object.freeze({ prediction: r!.prediction, score: r!.score, threshold: r!.threshold ?? 0.5 });
+    return Object.freeze({
+      prediction: r!.prediction,
+      score: r!.score,
+      threshold: r!.threshold ?? 0.5,
+      mode: options?.mode ?? firewall.mode ?? "block",
+    });
   }) as typeof firewall.classify;
   return { firewall, calls };
 }
@@ -151,7 +156,12 @@ describe("LangChain adapter — input hooks", () => {
       apiUrl: "https://api.test.invalid/classify",
     });
     firewall.classify = vi.fn(async () =>
-      Object.freeze({ prediction: "MALICIOUS" as const, score: 0.1, threshold: 0.9 }),
+      Object.freeze({
+        prediction: "MALICIOUS" as const,
+        score: 0.1,
+        threshold: 0.9,
+        mode: "block" as const,
+      }),
     ) as typeof firewall.classify;
     const handler = (await createLangChainHandler(firewall, { hooks: ALL_HOOKS })) as unknown as {
       handleToolEnd: (
@@ -344,13 +354,13 @@ describe("LangChain adapter — shadow mode", () => {
 
   function makeShadowFirewall(
     scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number } | Error>,
-    shadowMode: boolean,
+    shadowMode: boolean | undefined,
   ): { firewall: Firewall; calls: ClassifyCall[] } {
     const calls: ClassifyCall[] = [];
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
-      shadowMode,
+      ...(shadowMode === undefined ? {} : { shadowMode }),
     });
     let i = 0;
     firewall.classify = vi.fn(async (text, options) => {
@@ -360,7 +370,12 @@ describe("LangChain adapter — shadow mode", () => {
       if (r instanceof Error) {
         throw r;
       }
-      return Object.freeze({ prediction: r!.prediction, score: r!.score, threshold: r!.threshold ?? 0.5 });
+      return Object.freeze({
+        prediction: r!.prediction,
+        score: r!.score,
+        threshold: r!.threshold ?? 0.5,
+        mode: options?.mode ?? firewall.mode ?? "block",
+      });
     }) as typeof firewall.classify;
     return { firewall, calls };
   }
@@ -375,6 +390,50 @@ describe("LangChain adapter — shadow mode", () => {
     };
     await expect(handler.handleLLMStart({}, ["ignore previous"], "run-1")).resolves.toBeUndefined();
     expect(events).toEqual([{ blocked: true, shadowMode: true }]);
+  });
+
+  it("legacy mode-less responses cannot turn a Shadow adapter into Block", async () => {
+    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.99 }], true);
+    firewall.classify = vi.fn(async () => Object.freeze({
+      prediction: "MALICIOUS" as const,
+      score: 0.99,
+      threshold: 0.5,
+    })) as typeof firewall.classify;
+    const handler = (await createLangChainHandler(firewall)) as unknown as {
+      handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
+    };
+
+    await expect(handler.handleLLMStart({}, ["payload"], "run-legacy")).resolves.toBeUndefined();
+  });
+
+  it("effective warn mode preserves the host flow and is exposed on events", async () => {
+    const { firewall } = makeShadowFirewall(
+      [{ prediction: "MALICIOUS", score: 0.99 }],
+      undefined,
+    );
+    firewall.classify = vi.fn(async () => Object.freeze({
+      prediction: "MALICIOUS" as const,
+      score: 0.99,
+      threshold: 0.5,
+      mode: "warn" as const,
+    })) as typeof firewall.classify;
+    const events: Array<{ mode: string; shadowMode: boolean }> = [];
+    const handler = (await createLangChainHandler(firewall, {
+      onClassify: (event) => events.push({ mode: event.mode, shadowMode: event.shadowMode }),
+    })) as unknown as {
+      handleChatModelStart: (
+        llm: unknown,
+        messages: Array<Array<{ role: string; content: string }>>,
+        runId: string,
+      ) => Promise<void>;
+    };
+
+    await expect(handler.handleChatModelStart(
+      {},
+      [[{ role: "user", content: "payload" }]],
+      "run-warn",
+    )).resolves.toBeUndefined();
+    expect(events).toEqual([{ mode: "warn", shadowMode: false }]);
   });
 
   it("per-adapter shadowMode: true overrides firewall-level false", async () => {
