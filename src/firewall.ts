@@ -25,6 +25,7 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
 const MAX_ERROR_BODY_BYTES = 1 << 16;
+const LEGACY_RESPONSE_MODE: FirewallMode = "block";
 
 interface SingleClassifyPayload {
   text: string;
@@ -59,10 +60,7 @@ interface BatchClassifyResponse {
 
 function normalizeMode(value: unknown, fallback?: FirewallMode): FirewallMode {
   if (value === undefined) {
-    if (fallback !== undefined) {
-      return fallback;
-    }
-    throw new Error("Firewall: response mode must be shadow, warn, or block");
+    value = fallback ?? LEGACY_RESPONSE_MODE;
   }
   if (value === "shadow" || value === "warn" || value === "block") {
     return value;

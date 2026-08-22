@@ -8,6 +8,8 @@ All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
   batch classification, with the backend remaining authoritative when mode is
   omitted.
 - Return the backend-resolved effective mode on every classification result.
+- Treat a successful response without `mode` as legacy Block behavior during a
+  rolling backend upgrade; current backends always return the effective mode.
 - Retain `shadowMode` compatibility: `true` requests Shadow, `false` requests
   Block, and explicit `mode` takes precedence.
 - Make LangChain and Vercel adapters enforce only an effective Block decision;

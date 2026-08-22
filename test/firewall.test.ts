@@ -338,6 +338,26 @@ describe("Firewall.classify", () => {
     );
   });
 
+  it("uses legacy Block behavior for a mode-less successful response", async () => {
+    const { calls } = mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.9,
+          threshold: 0.5,
+          mode: undefined,
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    const result = await fw.classify("payload", { requestId: "req-legacy" });
+
+    expect(calls[0]!.body).not.toHaveProperty("mode");
+    expect(result.mode).toBe("block");
+  });
+
   it("throws SilmarilApiError on non-2xx non-429", async () => {
     mockFetch([{ status: 500, body: "boom" }]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });

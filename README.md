@@ -213,6 +213,10 @@ backend-configured mode. Shadow and Warn preserve the framework flow; Block
 throws `FirewallBlockedException` for a malicious decision. Every result and
 adapter event includes the backend-returned effective mode:
 
+During a rolling upgrade, a successful response from a pre-0.6 backend that
+omits `mode` retains the legacy SDK behavior and is treated as Block. Current
+backends return the effective mode, including backend-controlled Shadow or Warn.
+
 ```ts
 import { wrapLanguageModel, generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
