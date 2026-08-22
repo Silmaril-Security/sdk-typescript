@@ -48,6 +48,7 @@ export type {
   BlockResult,
   ClassifyEvent,
   Prediction,
+  FirewallMode,
   ClassificationMetadata,
   FirewallOptions,
   ClassifyOptions,

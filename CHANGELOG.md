@@ -2,6 +2,19 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.6.0 - 2026-08-22
+
+- Add the existing `shadow | warn | block` request mode contract to single and
+  batch classification, with the backend remaining authoritative when mode is
+  omitted.
+- Return the backend-resolved effective mode on every classification result.
+- Treat a successful response without `mode` as legacy Block behavior during a
+  rolling backend upgrade; current backends always return the effective mode.
+- Retain `shadowMode` compatibility: `true` requests Shadow, `false` requests
+  Block, and explicit `mode` takes precedence.
+- Make LangChain and Vercel adapters enforce only an effective Block decision;
+  Shadow and Warn preserve the host flow.
+
 ## 0.5.1 - 2026-07-29
 
 - Add typed support for `code_generation`, `story_script_generation`,

@@ -13,20 +13,23 @@ import type {
   ClassifyOptions,
   ClassificationMetadata,
   FirewallOptions,
+  FirewallMode,
   LangChainAdapterOptions,
   LangChainFirewallHandler,
   MiddlewareOptions,
   Prediction,
 } from "./types.js";
 
-export const SDK_VERSION = "0.5.1";
+export const SDK_VERSION = "0.6.0";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
 const MAX_ERROR_BODY_BYTES = 1 << 16;
+const LEGACY_RESPONSE_MODE: FirewallMode = "block";
 
 interface SingleClassifyPayload {
   text: string;
+  mode?: FirewallMode;
   hook?: string;
   tool_name?: string;
   metadata?: ClassificationMetadata;
@@ -34,6 +37,7 @@ interface SingleClassifyPayload {
 
 interface BatchClassifyPayload {
   texts: readonly string[];
+  mode?: FirewallMode;
   hooks?: readonly string[];
   tool_names?: readonly (string | null)[];
   metadata?: readonly (ClassificationMetadata | null)[];
@@ -43,6 +47,7 @@ interface SingleClassifyResponse {
   prediction: Prediction;
   score: number;
   threshold: number;
+  mode?: unknown;
   primary_outcome?: unknown;
   outcome_scores?: unknown;
   detector_scores?: unknown;
@@ -53,7 +58,24 @@ interface BatchClassifyResponse {
   predictions: readonly SingleClassifyResponse[];
 }
 
-function blockResultFromResponse(data: SingleClassifyResponse): BlockResult {
+function normalizeMode(value: unknown, fallback?: FirewallMode): FirewallMode {
+  if (value === undefined) {
+    value = fallback ?? LEGACY_RESPONSE_MODE;
+  }
+  if (value === "shadow" || value === "warn" || value === "block") {
+    return value;
+  }
+  throw new Error("Firewall: response mode must be shadow, warn, or block");
+}
+
+function legacyMode(shadowMode: boolean | undefined): FirewallMode | undefined {
+  return shadowMode === undefined ? undefined : shadowMode ? "shadow" : "block";
+}
+
+function blockResultFromResponse(
+  data: SingleClassifyResponse,
+  fallbackMode?: FirewallMode,
+): BlockResult {
   if (data.prediction !== "BENIGN" && data.prediction !== "MALICIOUS") {
     throw new Error("Firewall: response prediction must be BENIGN or MALICIOUS");
   }
@@ -61,6 +83,7 @@ function blockResultFromResponse(data: SingleClassifyResponse): BlockResult {
     prediction: Prediction;
     score: number;
     threshold: number;
+    mode: FirewallMode;
     primaryOutcome?: NonNullable<BlockResult["primaryOutcome"]>;
     outcomeScores?: NonNullable<BlockResult["outcomeScores"]>;
     detectorScores?: NonNullable<BlockResult["detectorScores"]>;
@@ -69,6 +92,7 @@ function blockResultFromResponse(data: SingleClassifyResponse): BlockResult {
     prediction: data.prediction,
     score: Number(data.score),
     threshold: Number(data.threshold),
+    mode: normalizeMode(data.mode, fallbackMode),
   };
   if (data.primary_outcome !== undefined) {
     result.primaryOutcome = normalizePrimaryOutcome(data.primary_outcome);
@@ -165,6 +189,7 @@ export class Firewall {
   readonly apiUrl: string;
   readonly timeoutMs: number;
   readonly shadowMode: boolean;
+  readonly mode: FirewallMode | undefined;
 
   private readonly headers: Readonly<Record<string, string>>;
 
@@ -181,7 +206,8 @@ export class Firewall {
     if (typeof this.timeoutMs !== "number" || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 0) {
       throw new Error(`Firewall: timeoutMs must be a finite non-negative number, got ${this.timeoutMs}`);
     }
-    this.shadowMode = options.shadowMode ?? false;
+    this.mode = options.mode ?? legacyMode(options.shadowMode);
+    this.shadowMode = this.mode === "shadow";
     this.headers = Object.freeze({
       "x-api-key": this.apiKey,
       "content-type": "application/json",
@@ -220,6 +246,10 @@ export class Firewall {
     const payload: BatchClassifyPayload = {
       texts: texts.map((text) => sanitizeText(text)),
     };
+    const requestedMode = options.mode ?? this.mode;
+    if (requestedMode !== undefined) {
+      payload.mode = requestedMode;
+    }
     if (options.hooks && options.hooks.length > 0) {
       payload.hooks = options.hooks.map((h) => String(h));
     }
@@ -233,7 +263,7 @@ export class Firewall {
       }),
     );
     const data = await this.postWithRetry<BatchClassifyResponse>(payload);
-    return data.predictions.map((p) => blockResultFromResponse(p));
+    return data.predictions.map((p) => blockResultFromResponse(p, requestedMode));
   }
 
   asLangChainHandler<THandler = LangChainFirewallHandler>(
@@ -285,6 +315,10 @@ export class Firewall {
     },
   ): Promise<BlockResult> {
     const payload: SingleClassifyPayload = { text };
+    const requestedMode = options.mode ?? this.mode;
+    if (requestedMode !== undefined) {
+      payload.mode = requestedMode;
+    }
     if (options.hook !== undefined) {
       payload.hook = options.hook;
     }
@@ -293,6 +327,6 @@ export class Firewall {
     }
     payload.metadata = withSdkMetadata(options.metadata, metadataInfo);
     const data = await this.postWithRetry<SingleClassifyResponse>(payload);
-    return blockResultFromResponse(data);
+    return blockResultFromResponse(data, requestedMode);
   }
 }

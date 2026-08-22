@@ -48,14 +48,17 @@ function withDefaultThresholds(body: unknown): unknown {
   }
   const data = body as Record<string, unknown>;
   if (typeof data.prediction === "string" && data.threshold === undefined) {
-    return { ...data, threshold: 0.5 };
+    return { mode: "block", ...data, threshold: 0.5 };
+  }
+  if (typeof data.prediction === "string" && data.mode === undefined) {
+    return { mode: "block", ...data };
   }
   if (Array.isArray(data.predictions)) {
     return {
       ...data,
       predictions: data.predictions.map((item) =>
         item && typeof item === "object" && !Array.isArray(item)
-          ? { threshold: 0.5, ...(item as Record<string, unknown>) }
+          ? { threshold: 0.5, mode: "block", ...(item as Record<string, unknown>) }
           : item,
       ),
     };
@@ -66,7 +69,7 @@ function withDefaultThresholds(body: unknown): unknown {
 function silmarilMetadata(requestId: string, inputIndex?: number): Record<string, unknown> {
   return {
     sdk_language: "typescript",
-    sdk_version: "0.5.1",
+    sdk_version: "0.6.0",
     request_id: requestId,
     ...(inputIndex === undefined ? {} : { input_index: inputIndex }),
   };
@@ -90,6 +93,7 @@ describe("Firewall constructor", () => {
     expect(fw.apiUrl).toBe(TEST_API_URL);
     expect(fw.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
     expect(fw.shadowMode).toBe(false);
+    expect(fw.mode).toBeUndefined();
   });
 
   it("accepts option values", () => {
@@ -102,6 +106,21 @@ describe("Firewall constructor", () => {
     expect(fw.apiUrl).toBe("https://example.test/classify");
     expect(fw.timeoutMs).toBe(5000);
     expect(fw.shadowMode).toBe(true);
+    expect(fw.mode).toBe("shadow");
+  });
+
+  it("maps legacy shadowMode and gives explicit mode precedence", () => {
+    expect(new Firewall({
+      apiKey: "sk-test",
+      apiUrl: TEST_API_URL,
+      shadowMode: false,
+    }).mode).toBe("block");
+    expect(new Firewall({
+      apiKey: "sk-test",
+      apiUrl: TEST_API_URL,
+      mode: "warn",
+      shadowMode: true,
+    }).mode).toBe("warn");
   });
 
   it("rejects invalid timeoutMs", () => {
@@ -128,7 +147,12 @@ describe("Firewall.classify", () => {
     const { calls } = mockFetch([{ status: 200, body: { prediction: "BENIGN", score: 0.12 } }]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     const result = await fw.classify("hello world", { requestId: "req-single" });
-    expect(result).toEqual({ prediction: "BENIGN", score: 0.12, threshold: 0.5 });
+    expect(result).toEqual({
+      prediction: "BENIGN",
+      score: 0.12,
+      threshold: 0.5,
+      mode: "block",
+    });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(TEST_API_URL);
     expect(calls[0]!.init.method).toBe("POST");
@@ -163,6 +187,7 @@ describe("Firewall.classify", () => {
       prediction: "MALICIOUS",
       score: 0.91,
       threshold: 0.5,
+      mode: "block",
       primaryOutcome: Outcome.SecretExposure,
       outcomeScores: { [Outcome.SecretExposure]: 0.8 },
       detectorScores: { [Outcome.SecretExposure]: 1.0 },
@@ -199,6 +224,7 @@ describe("Firewall.classify", () => {
       prediction: "MALICIOUS",
       score: 0.91,
       threshold: expect.any(Number),
+      mode: "block",
       primaryOutcome: "data_exfiltration",
       outcomeScores: { data_exfiltration: 0.8 },
       detectorScores: { data_exfiltration: 0.7 },
@@ -270,6 +296,66 @@ describe("Firewall.classify", () => {
         silmaril: silmarilMetadata("req-meta"),
       },
     });
+  });
+
+  it("sends an explicit mode and consumes the backend effective mode", async () => {
+    const { calls } = mockFetch([
+      {
+        status: 200,
+        body: { prediction: "MALICIOUS", score: 0.9, threshold: 0.5, mode: "warn" },
+      },
+    ]);
+    const fw = new Firewall({
+      apiKey: "sk-test",
+      apiUrl: TEST_API_URL,
+      mode: "shadow",
+    });
+
+    const result = await fw.classify("payload", {
+      mode: "block",
+      requestId: "req-mode",
+    });
+
+    expect(calls[0]!.body).toEqual({
+      text: "payload",
+      mode: "block",
+      metadata: { silmaril: silmarilMetadata("req-mode") },
+    });
+    expect(result.mode).toBe("warn");
+  });
+
+  it("rejects an invalid backend effective mode", async () => {
+    mockFetch([
+      {
+        status: 200,
+        body: { prediction: "BENIGN", score: 0.1, threshold: 0.5, mode: "enforce" },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    await expect(fw.classify("payload")).rejects.toThrow(
+      /response mode must be shadow, warn, or block/,
+    );
+  });
+
+  it("uses legacy Block behavior for a mode-less successful response", async () => {
+    const { calls } = mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.9,
+          threshold: 0.5,
+          mode: undefined,
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    const result = await fw.classify("payload", { requestId: "req-legacy" });
+
+    expect(calls[0]!.body).not.toHaveProperty("mode");
+    expect(result.mode).toBe("block");
   });
 
   it("throws SilmarilApiError on non-2xx non-429", async () => {
@@ -410,11 +496,17 @@ describe("Firewall.classifyBatch", () => {
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     const results = await fw.classifyBatch(["a", "b"]);
 
-    expect(results[0]).toEqual({ prediction: "BENIGN", score: 0.01, threshold: 0.5 });
+    expect(results[0]).toEqual({
+      prediction: "BENIGN",
+      score: 0.01,
+      threshold: 0.5,
+      mode: "block",
+    });
     expect(results[1]).toEqual({
       prediction: "MALICIOUS",
       score: 0.9,
       threshold: 0.5,
+      mode: "block",
       primaryOutcome: Outcome.SystemCompromise,
       outcomeScores: { [Outcome.SystemCompromise]: 0.92 },
       detectorScores: { [Outcome.InformationDisclosure]: 0.85 },
@@ -564,7 +656,12 @@ describe("Firewall.classify — complete events", () => {
     const longText = "a".repeat(4001);
     const result = await fw.classify(longText, { requestId: "long-event" });
 
-    expect(result).toEqual({ prediction: "BENIGN", score: 0.2, threshold: 0.75 });
+    expect(result).toEqual({
+      prediction: "BENIGN",
+      score: 0.2,
+      threshold: 0.75,
+      mode: "block",
+    });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.body).toEqual({
       text: longText,

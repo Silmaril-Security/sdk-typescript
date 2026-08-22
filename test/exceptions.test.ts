@@ -86,7 +86,12 @@ describe("FirewallBlockedException", () => {
   });
 
   it("exposes blocking context as readable fields", () => {
-    const result = Object.freeze({ prediction: "MALICIOUS" as const, score: 0.7, threshold: 0.5 });
+    const result = Object.freeze({
+      prediction: "MALICIOUS" as const,
+      score: 0.7,
+      threshold: 0.5,
+      mode: "block" as const,
+    });
     const err = new FirewallBlockedException({
       score: 0.7,
       threshold: 0.5,
