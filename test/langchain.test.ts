@@ -354,13 +354,13 @@ describe("LangChain adapter — shadow mode", () => {
 
   function makeShadowFirewall(
     scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number } | Error>,
-    shadowMode: boolean,
+    shadowMode: boolean | undefined,
   ): { firewall: Firewall; calls: ClassifyCall[] } {
     const calls: ClassifyCall[] = [];
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
-      shadowMode,
+      ...(shadowMode === undefined ? {} : { shadowMode }),
     });
     let i = 0;
     firewall.classify = vi.fn(async (text, options) => {
@@ -409,7 +409,7 @@ describe("LangChain adapter — shadow mode", () => {
   it("effective warn mode preserves the host flow and is exposed on events", async () => {
     const { firewall } = makeShadowFirewall(
       [{ prediction: "MALICIOUS", score: 0.99 }],
-      false,
+      undefined,
     );
     firewall.classify = vi.fn(async () => Object.freeze({
       prediction: "MALICIOUS" as const,
