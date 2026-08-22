@@ -392,6 +392,20 @@ describe("LangChain adapter — shadow mode", () => {
     expect(events).toEqual([{ blocked: true, shadowMode: true }]);
   });
 
+  it("legacy mode-less responses cannot turn a Shadow adapter into Block", async () => {
+    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.99 }], true);
+    firewall.classify = vi.fn(async () => Object.freeze({
+      prediction: "MALICIOUS" as const,
+      score: 0.99,
+      threshold: 0.5,
+    })) as typeof firewall.classify;
+    const handler = (await createLangChainHandler(firewall)) as unknown as {
+      handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
+    };
+
+    await expect(handler.handleLLMStart({}, ["payload"], "run-legacy")).resolves.toBeUndefined();
+  });
+
   it("effective warn mode preserves the host flow and is exposed on events", async () => {
     const { firewall } = makeShadowFirewall(
       [{ prediction: "MALICIOUS", score: 0.99 }],

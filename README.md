@@ -210,12 +210,13 @@ metadata.
 
 Use `shadow`, `warn`, or `block` only when a request needs to override the
 backend-configured mode. Shadow and Warn preserve the framework flow; Block
-throws `FirewallBlockedException` for a malicious decision. Every result and
-adapter event includes the backend-returned effective mode:
+throws `FirewallBlockedException` for a malicious decision. Current backends
+return the effective mode on every result.
 
-During a rolling upgrade, a successful response from a pre-0.6 backend that
-omits `mode` retains the legacy SDK behavior and is treated as Block. Current
-backends return the effective mode, including backend-controlled Shadow or Warn.
+During a rolling upgrade, an explicit request mode remains authoritative if a
+legacy or mixed-version backend omits or disagrees about `mode`. When both the
+request and response omit it, `BlockResult.mode` remains unset; adapters retain
+their pre-0.6 default behavior without falsely reporting a backend Block mode.
 
 ```ts
 import { wrapLanguageModel, generateText } from "ai";

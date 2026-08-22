@@ -490,6 +490,23 @@ describe("Vercel middleware — shadow mode", () => {
     expect(onBlocked).not.toHaveBeenCalled();
   });
 
+  it("legacy mode-less responses cannot turn Shadow middleware into Block", async () => {
+    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.97 }], true);
+    firewall.classify = vi.fn(async () => Object.freeze({
+      prediction: "MALICIOUS" as const,
+      score: 0.97,
+      threshold: 0.5,
+    })) as typeof firewall.classify;
+    const middleware = createMiddleware(firewall);
+    const doGenerate = vi.fn(async () => ({ text: "preserved" }));
+
+    await expect(middleware.wrapGenerate({
+      params: { prompt: [{ role: "user", content: "payload" }] },
+      doGenerate,
+    })).resolves.toMatchObject({ text: "preserved" });
+    expect(doGenerate).toHaveBeenCalledOnce();
+  });
+
   it("middleware shadowMode: true overrides firewall shadowMode: false", async () => {
     const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.97 }], false);
     const events: Array<{ blocked: boolean; shadowMode: boolean }> = [];

@@ -11,7 +11,8 @@ export interface BlockResult {
   readonly prediction: Prediction;
   readonly score: number;
   readonly threshold: number;
-  readonly mode: FirewallMode;
+  /** Omitted only when a legacy backend did not return mode and no override was requested. */
+  readonly mode?: FirewallMode;
   readonly primaryOutcome?: PrimaryOutcome;
   readonly outcomeScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
   readonly detectorScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;

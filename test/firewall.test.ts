@@ -298,7 +298,7 @@ describe("Firewall.classify", () => {
     });
   });
 
-  it("sends an explicit mode and consumes the backend effective mode", async () => {
+  it("keeps an explicit request override authoritative across a mixed backend rollout", async () => {
     const { calls } = mockFetch([
       {
         status: 200,
@@ -321,7 +321,7 @@ describe("Firewall.classify", () => {
       mode: "block",
       metadata: { silmaril: silmarilMetadata("req-mode") },
     });
-    expect(result.mode).toBe("warn");
+    expect(result.mode).toBe("block");
   });
 
   it("rejects an invalid backend effective mode", async () => {
@@ -338,7 +338,7 @@ describe("Firewall.classify", () => {
     );
   });
 
-  it("uses legacy Block behavior for a mode-less successful response", async () => {
+  it("preserves absence for a backend-controlled mode-less response", async () => {
     const { calls } = mockFetch([
       {
         status: 200,
@@ -355,7 +355,48 @@ describe("Firewall.classify", () => {
     const result = await fw.classify("payload", { requestId: "req-legacy" });
 
     expect(calls[0]!.body).not.toHaveProperty("mode");
-    expect(result.mode).toBe("block");
+    expect(result.mode).toBeUndefined();
+  });
+
+  it("preserves an explicit Shadow override when a legacy backend omits mode", async () => {
+    mockFetch([
+      {
+        status: 200,
+        body: { prediction: "MALICIOUS", score: 0.9, threshold: 0.5 },
+      },
+    ]);
+    const fw = new Firewall({
+      apiKey: "sk-test",
+      apiUrl: TEST_API_URL,
+      shadowMode: true,
+    });
+
+    const result = await fw.classify("payload");
+
+    expect(result.mode).toBe("shadow");
+  });
+
+  it("does not escalate an explicit Shadow override when a mixed backend reports Block", async () => {
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.9,
+          threshold: 0.5,
+          mode: "block",
+        },
+      },
+    ]);
+    const fw = new Firewall({
+      apiKey: "sk-test",
+      apiUrl: TEST_API_URL,
+      mode: "shadow",
+    });
+
+    const result = await fw.classify("payload");
+
+    expect(result.mode).toBe("shadow");
   });
 
   it("throws SilmarilApiError on non-2xx non-429", async () => {

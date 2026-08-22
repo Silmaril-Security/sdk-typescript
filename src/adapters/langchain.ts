@@ -125,7 +125,7 @@ export async function createLangChainHandler(
     }
     const threshold = result.threshold;
     const blocked = result.prediction === "MALICIOUS";
-    const effectiveMode = result.mode;
+    const effectiveMode = requestedMode ?? result.mode ?? "block";
     const commonEventFields = {
       hook: hookLabel,
       ...(toolName !== undefined ? { toolName } : {}),

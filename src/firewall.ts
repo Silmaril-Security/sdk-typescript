@@ -25,7 +25,6 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
 const MAX_ERROR_BODY_BYTES = 1 << 16;
-const LEGACY_RESPONSE_MODE: FirewallMode = "block";
 
 interface SingleClassifyPayload {
   text: string;
@@ -58,14 +57,18 @@ interface BatchClassifyResponse {
   predictions: readonly SingleClassifyResponse[];
 }
 
-function normalizeMode(value: unknown, fallback?: FirewallMode): FirewallMode {
-  if (value === undefined) {
-    value = fallback ?? LEGACY_RESPONSE_MODE;
-  }
+function resolveMode(value: unknown, requestedMode?: FirewallMode): FirewallMode | undefined {
+  let responseMode: FirewallMode | undefined;
   if (value === "shadow" || value === "warn" || value === "block") {
-    return value;
+    responseMode = value;
+  } else if (value !== undefined) {
+    throw new Error("Firewall: response mode must be shadow, warn, or block");
   }
-  throw new Error("Firewall: response mode must be shadow, warn, or block");
+
+  // A supplied mode is the per-request override contract. Prefer it during
+  // rolling upgrades so a missing or stale response field cannot strengthen
+  // enforcement beyond what the caller requested.
+  return requestedMode ?? responseMode;
 }
 
 function legacyMode(shadowMode: boolean | undefined): FirewallMode | undefined {
@@ -74,7 +77,7 @@ function legacyMode(shadowMode: boolean | undefined): FirewallMode | undefined {
 
 function blockResultFromResponse(
   data: SingleClassifyResponse,
-  fallbackMode?: FirewallMode,
+  requestedMode?: FirewallMode,
 ): BlockResult {
   if (data.prediction !== "BENIGN" && data.prediction !== "MALICIOUS") {
     throw new Error("Firewall: response prediction must be BENIGN or MALICIOUS");
@@ -83,7 +86,7 @@ function blockResultFromResponse(
     prediction: Prediction;
     score: number;
     threshold: number;
-    mode: FirewallMode;
+    mode?: FirewallMode;
     primaryOutcome?: NonNullable<BlockResult["primaryOutcome"]>;
     outcomeScores?: NonNullable<BlockResult["outcomeScores"]>;
     detectorScores?: NonNullable<BlockResult["detectorScores"]>;
@@ -92,8 +95,11 @@ function blockResultFromResponse(
     prediction: data.prediction,
     score: Number(data.score),
     threshold: Number(data.threshold),
-    mode: normalizeMode(data.mode, fallbackMode),
   };
+  const mode = resolveMode(data.mode, requestedMode);
+  if (mode !== undefined) {
+    result.mode = mode;
+  }
   if (data.primary_outcome !== undefined) {
     result.primaryOutcome = normalizePrimaryOutcome(data.primary_outcome);
   }
