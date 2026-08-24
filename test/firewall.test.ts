@@ -276,6 +276,78 @@ describe("Firewall.classify", () => {
     });
   });
 
+  it("serializes governance context under existing Silmaril metadata", async () => {
+    const { calls } = mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "BENIGN",
+          score: 0.1,
+          governance: {
+            action: "block",
+            rule_id: "block-unapproved-mcp",
+            policy_version: "pwc-v1",
+          },
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const result = await fw.classify("create issue", {
+      toolName: "create_issue",
+      governance: {
+        agent: "cursor",
+        resource: { kind: "mcp_tool", id: "create_issue", parentId: "github" },
+      },
+      metadata: { run_id: "run-123", silmaril: { host: "cursor" } },
+      requestId: "req-governance",
+    });
+
+    expect(calls[0]!.body).toEqual({
+      text: "create issue",
+      tool_name: "create_issue",
+      metadata: {
+        run_id: "run-123",
+        silmaril: {
+          host: "cursor",
+          ...silmarilMetadata("req-governance"),
+          governance: {
+            agent: "cursor",
+            resource: {
+              kind: "mcp_tool",
+              id: "create_issue",
+              parent_id: "github",
+            },
+          },
+        },
+      },
+    });
+    expect(result.governance).toEqual({
+      action: "block",
+      ruleId: "block-unapproved-mcp",
+      policyVersion: "pwc-v1",
+    });
+  });
+
+  it("accepts legacy responses without governance and rejects malformed decisions", async () => {
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    mockFetch([{ status: 200, body: { prediction: "BENIGN", score: 0.1 } }]);
+    await expect(fw.classify("legacy")).resolves.not.toHaveProperty("governance");
+
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "BENIGN",
+          score: 0.1,
+          governance: { action: "warn", policy_version: "v1" },
+        },
+      },
+    ]);
+    await expect(fw.classify("invalid")).rejects.toThrow(
+      /governance action must be allow or block/,
+    );
+  });
+
   it("includes metadata as a separate wire key when provided", async () => {
     const { calls } = mockFetch([{ status: 200, body: { prediction: "BENIGN", score: 0.2 } }]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
@@ -573,6 +645,47 @@ describe("Firewall.classifyBatch", () => {
     });
   });
 
+  it("serializes aligned governance context for batch requests", async () => {
+    const { calls } = mockFetch([
+      {
+        status: 200,
+        body: {
+          predictions: [
+            { prediction: "BENIGN", score: 0, governance: { action: "allow", policy_version: "v1" } },
+            { prediction: "BENIGN", score: 0, governance: { action: "block", policy_version: "v1" } },
+          ],
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const results = await fw.classifyBatch(["a", "b"], {
+      governance: [
+        { agent: "codex", resource: { kind: "tool", id: "shell" } },
+        { agent: "cursor", resource: { kind: "mcp_server", id: "github" } },
+      ],
+      requestId: "governance-batch",
+    });
+
+    expect(calls[0]!.body).toEqual({
+      texts: ["a", "b"],
+      metadata: [
+        {
+          silmaril: {
+            ...silmarilMetadata("governance-batch", 0),
+            governance: { agent: "codex", resource: { kind: "tool", id: "shell" } },
+          },
+        },
+        {
+          silmaril: {
+            ...silmarilMetadata("governance-batch", 1),
+            governance: { agent: "cursor", resource: { kind: "mcp_server", id: "github" } },
+          },
+        },
+      ],
+    });
+    expect(results.map((result) => result.governance?.action)).toEqual(["allow", "block"]);
+  });
+
   it("serializes metadata when provided", async () => {
     const { calls } = mockFetch([
       {
@@ -674,6 +787,15 @@ describe("Firewall.classifyBatch", () => {
     await expect(fw.classifyBatch(["a", "b"], { toolNames: ["read_file"] })).rejects.toThrow(
       /toolNames length 1 does not match texts length 2/,
     );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects governance length mismatches before sending", async () => {
+    const { calls } = mockFetch([{ status: 200, body: { predictions: [] } }]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    await expect(
+      fw.classifyBatch(["a", "b"], { governance: [{ agent: "codex" }] }),
+    ).rejects.toThrow(/governance length 1 does not match texts length 2/);
     expect(calls).toHaveLength(0);
   });
 });

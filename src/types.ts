@@ -6,6 +6,32 @@ import type { HarmfulOutcome, PrimaryOutcome } from "./outcomes.js";
 
 export type Prediction = "BENIGN" | "MALICIOUS";
 export type FirewallMode = "shadow" | "warn" | "block";
+export type GovernanceAction = "allow" | "block";
+export type GovernanceResourceKind =
+  | "agent"
+  | "tool"
+  | "mcp_server"
+  | "mcp_tool"
+  | "plugin"
+  | "skill"
+  | "extension";
+
+export interface GovernanceResource {
+  readonly kind: GovernanceResourceKind;
+  readonly id?: string;
+  readonly parentId?: string;
+}
+
+export interface GovernanceContext {
+  readonly agent?: string;
+  readonly resource?: GovernanceResource;
+}
+
+export interface GovernanceDecision {
+  readonly action: GovernanceAction;
+  readonly ruleId?: string;
+  readonly policyVersion: string;
+}
 
 export interface BlockResult {
   readonly prediction: Prediction;
@@ -17,6 +43,7 @@ export interface BlockResult {
   readonly outcomeScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
   readonly detectorScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
   readonly detectorCounts?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
+  readonly governance?: GovernanceDecision;
 }
 
 export interface FirewallOptions {
@@ -34,6 +61,7 @@ export interface ClassifyOptions {
   mode?: FirewallMode;
   hook?: HookLabel;
   toolName?: string;
+  governance?: GovernanceContext;
   metadata?: ClassificationMetadata;
   requestId?: string;
 }
@@ -42,6 +70,7 @@ export interface ClassifyBatchOptions {
   mode?: FirewallMode;
   hooks?: readonly HookLabel[];
   toolNames?: readonly (string | undefined)[];
+  governance?: readonly (GovernanceContext | undefined)[];
   metadata?: readonly (ClassificationMetadata | undefined)[];
   requestId?: string;
 }

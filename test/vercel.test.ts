@@ -178,6 +178,52 @@ describe("Vercel middleware — wrapGenerate", () => {
   });
 });
 
+describe("Vercel middleware — governance", () => {
+  function governedFirewall(mode: "shadow" | "warn" | "block"): Firewall {
+    const firewall = new Firewall({
+      apiKey: "sk-test",
+      apiUrl: "https://api.test.invalid/classify",
+      mode,
+    });
+    firewall.classify = vi.fn(async () =>
+      Object.freeze({
+        prediction: "BENIGN" as const,
+        score: 0.1,
+        threshold: 0.5,
+        mode,
+        governance: {
+          action: "block" as const,
+          ruleId: "block-tool",
+          policyVersion: "v1",
+        },
+      }),
+    ) as typeof firewall.classify;
+    return firewall;
+  }
+
+  it("denies a benign governance block only in block mode", async () => {
+    const blockedGenerate = vi.fn(async () => ({ text: "never" }));
+    await expect(
+      createMiddleware(governedFirewall("block")).wrapGenerate({
+        params: { prompt: [{ role: "user", content: "hello" }] },
+        doGenerate: blockedGenerate,
+      }),
+    ).rejects.toBeInstanceOf(PromptBlockedException);
+    expect(blockedGenerate).not.toHaveBeenCalled();
+
+    for (const mode of ["shadow", "warn"] as const) {
+      const doGenerate = vi.fn(async () => ({ text: "allowed" }));
+      await expect(
+        createMiddleware(governedFirewall(mode)).wrapGenerate({
+          params: { prompt: [{ role: "user", content: "hello" }] },
+          doGenerate,
+        }),
+      ).resolves.toEqual({ text: "allowed" });
+      expect(doGenerate).toHaveBeenCalledOnce();
+    }
+  });
+});
+
 describe("Vercel middleware — auto tool detection", () => {
   it("classifies tool-result parts with tool_response hook and auto-detected toolName", async () => {
     const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);

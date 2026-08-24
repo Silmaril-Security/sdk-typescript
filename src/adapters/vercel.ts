@@ -183,7 +183,7 @@ export function createMiddleware(
       },
     );
     const threshold = result.threshold;
-    const blocked = result.prediction === "MALICIOUS";
+    const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
     const effectiveMode = requestedMode ?? result.mode ?? "block";
     const commonEventFields = {
       hook,
