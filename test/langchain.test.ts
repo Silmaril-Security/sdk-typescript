@@ -241,8 +241,8 @@ describe("LangChain adapter — governance", () => {
     })) as unknown as {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
-    await expect(blockHandler.handleLLMStart({}, ["hello"], "run-1")).rejects.toBeInstanceOf(
-      PromptBlockedException,
+    await expect(blockHandler.handleLLMStart({}, ["hello"], "run-1")).rejects.toThrow(
+      /governance policy/,
     );
 
     for (const mode of ["shadow", "warn"] as const) {

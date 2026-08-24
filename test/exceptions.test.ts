@@ -54,6 +54,23 @@ describe("FirewallBlockedException", () => {
     expect(err.message).toContain("threshold=0.5000");
   });
 
+  it("identifies a benign governance-policy denial", () => {
+    const err = new FirewallBlockedException({
+      score: 0.1,
+      threshold: 0.5,
+      promptText: "hello",
+      result: {
+        prediction: "BENIGN",
+        score: 0.1,
+        threshold: 0.5,
+        governance: { action: "block", ruleId: "policy-rule", policyVersion: "v1" },
+      },
+    });
+    expect(err.message).toBe(
+      "Request blocked by Silmaril Firewall governance policy: 'hello'",
+    );
+  });
+
   it("includes the prompt text verbatim when under the display limit", () => {
     const err = new FirewallBlockedException({
       score: 0.9,

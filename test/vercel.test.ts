@@ -208,7 +208,7 @@ describe("Vercel middleware — governance", () => {
         params: { prompt: [{ role: "user", content: "hello" }] },
         doGenerate: blockedGenerate,
       }),
-    ).rejects.toBeInstanceOf(PromptBlockedException);
+    ).rejects.toThrow(/governance policy/);
     expect(blockedGenerate).not.toHaveBeenCalled();
 
     for (const mode of ["shadow", "warn"] as const) {
