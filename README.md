@@ -37,7 +37,7 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.6.0
+npm install @silmaril-security/sdk@0.6.1
 ```
 
 Requires Node 18 or later.
