@@ -14,6 +14,8 @@ import type {
   ClassificationMetadata,
   FirewallOptions,
   FirewallMode,
+  GovernanceContext,
+  GovernanceDecision,
   LangChainAdapterOptions,
   LangChainFirewallHandler,
   MiddlewareOptions,
@@ -51,6 +53,7 @@ interface SingleClassifyResponse {
   outcome_scores?: unknown;
   detector_scores?: unknown;
   detector_counts?: unknown;
+  governance?: unknown;
 }
 
 interface BatchClassifyResponse {
@@ -91,6 +94,7 @@ function blockResultFromResponse(
     outcomeScores?: NonNullable<BlockResult["outcomeScores"]>;
     detectorScores?: NonNullable<BlockResult["detectorScores"]>;
     detectorCounts?: NonNullable<BlockResult["detectorCounts"]>;
+    governance?: GovernanceDecision;
   } = {
     prediction: data.prediction,
     score: Number(data.score),
@@ -121,6 +125,9 @@ function blockResultFromResponse(
       result.detectorCounts = detectorCounts;
     }
   }
+  if (data.governance !== undefined) {
+    result.governance = governanceDecisionFromResponse(data.governance);
+  }
   return Object.freeze(result);
 }
 
@@ -133,6 +140,7 @@ function withSdkMetadata(
   info: {
     requestId: string;
     inputIndex?: number;
+    governance?: GovernanceContext;
   },
 ): ClassificationMetadata {
   const payload: Record<string, unknown> = { ...(metadata ?? {}) };
@@ -146,8 +154,48 @@ function withSdkMetadata(
     sdk_version: SDK_VERSION,
     request_id: info.requestId,
     ...(info.inputIndex === undefined ? {} : { input_index: info.inputIndex }),
+    ...(info.governance === undefined
+      ? {}
+      : { governance: governanceContextToWire(info.governance) }),
   };
   return payload;
+}
+
+function governanceContextToWire(context: GovernanceContext): Record<string, unknown> {
+  return {
+    ...(context.agent === undefined ? {} : { agent: context.agent }),
+    ...(context.resource === undefined
+      ? {}
+      : {
+          resource: {
+            kind: context.resource.kind,
+            ...(context.resource.id === undefined ? {} : { id: context.resource.id }),
+            ...(context.resource.parentId === undefined
+              ? {}
+              : { parent_id: context.resource.parentId }),
+          },
+        }),
+  };
+}
+
+function governanceDecisionFromResponse(value: unknown): GovernanceDecision {
+  if (!isRecord(value)) {
+    throw new Error("Firewall: response governance must be an object");
+  }
+  if (value.action !== "allow" && value.action !== "block") {
+    throw new Error("Firewall: response governance action must be allow or block");
+  }
+  if (typeof value.policy_version !== "string" || value.policy_version.length === 0) {
+    throw new Error("Firewall: response governance policy_version must be a non-empty string");
+  }
+  if (value.rule_id !== undefined && typeof value.rule_id !== "string") {
+    throw new Error("Firewall: response governance rule_id must be a string when provided");
+  }
+  return Object.freeze({
+    action: value.action,
+    ...(value.rule_id === undefined ? {} : { ruleId: value.rule_id }),
+    policyVersion: value.policy_version,
+  });
 }
 
 async function readCappedErrorBody(response: Response): Promise<string> {
@@ -247,6 +295,11 @@ export class Firewall {
         `Firewall: metadata length ${options.metadata.length} does not match texts length ${texts.length}`,
       );
     }
+    if (options.governance !== undefined && options.governance.length !== texts.length) {
+      throw new Error(
+        `Firewall: governance length ${options.governance.length} does not match texts length ${texts.length}`,
+      );
+    }
 
     const requestId = options.requestId ?? randomUUID();
     const payload: BatchClassifyPayload = {
@@ -266,6 +319,9 @@ export class Firewall {
       withSdkMetadata(options.metadata?.[index], {
         requestId,
         inputIndex: index,
+        ...(options.governance?.[index] === undefined
+          ? {}
+          : { governance: options.governance[index] }),
       }),
     );
     const data = await this.postWithRetry<BatchClassifyResponse>(payload);
@@ -331,7 +387,10 @@ export class Firewall {
     if (options.toolName !== undefined) {
       payload.tool_name = options.toolName;
     }
-    payload.metadata = withSdkMetadata(options.metadata, metadataInfo);
+    payload.metadata = withSdkMetadata(options.metadata, {
+      ...metadataInfo,
+      ...(options.governance === undefined ? {} : { governance: options.governance }),
+    });
     const data = await this.postWithRetry<SingleClassifyResponse>(payload);
     return blockResultFromResponse(data, requestedMode);
   }

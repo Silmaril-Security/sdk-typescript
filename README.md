@@ -37,7 +37,7 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.6.0
+npm install @silmaril-security/sdk@0.6.1
 ```
 
 Requires Node 18 or later.
@@ -304,15 +304,17 @@ await fw.classify(text, {
 The SDK preserves caller metadata and adds a reserved `metadata.silmaril`
 namespace to every request. SDK-controlled fields are `sdk_language`,
 `sdk_version`, and `request_id`; batches additionally carry `input_index` for
-diagnostics and remain stateless. Exact `metadata.conversationId` is preserved
-as the backend sequence identity. No aliases are inspected. If callers provide
-`metadata.silmaril`, it must be an object and SDK-reserved keys are overwritten
-by the SDK.
+diagnostics and remain stateless. `governance` is also SDK-controlled whenever
+the typed governance option is supplied; it replaces any caller-provided
+`metadata.silmaril.governance` value. Exact `metadata.conversationId` is
+preserved as the backend sequence identity. No aliases are inspected. If
+callers provide `metadata.silmaril`, it must be an object and SDK-reserved keys
+are overwritten by the SDK.
 
 ## Errors
 
 - `SilmarilApiError`: thrown when the firewall API responds with a non-2xx or redirect status. Carries `status`, `statusText`, a 64 KiB-capped `body`, and any parsed malformed-input diagnostics. The default error message omits the body to keep logs clean.
-- `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters when a malicious decision has effective Block mode. Carries `score`, `threshold`, `promptText`, and optional `runId`, `hook`, `toolName`, `toolCallId`, and `result`.
+- `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters when a malicious or governance-block decision has effective Block mode. The message distinguishes governance-policy denials from threat-score denials. Carries `score`, `threshold`, `promptText`, and optional `runId`, `hook`, `toolName`, `toolCallId`, and `result`.
 
 `PromptBlockedException` remains as a deprecated alias for one release.
 

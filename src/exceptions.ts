@@ -52,11 +52,18 @@ export class FirewallBlockedException extends Error {
     score: number;
     threshold: number;
     promptText: string;
+    result?: BlockResult;
   }): string {
     const truncated =
       params.promptText.length > MAX_PROMPT_DISPLAY_LEN
         ? `${params.promptText.slice(0, MAX_PROMPT_DISPLAY_LEN)}...`
         : params.promptText;
+    if (
+      params.result?.prediction !== "MALICIOUS" &&
+      params.result?.governance?.action === "block"
+    ) {
+      return `Request blocked by Silmaril Firewall governance policy: '${truncated}'`;
+    }
     return (
       `Request blocked by Silmaril Firewall ` +
       `(score=${params.score.toFixed(4)}, threshold=${params.threshold.toFixed(4)}): ` +

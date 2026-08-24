@@ -2,6 +2,17 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.6.1 - 2026-08-24
+
+- Add typed governance request context for agents, hooks, principals, and
+  governed resources under the SDK-controlled Silmaril metadata namespace.
+- Normalize governance decisions returned by Firewall without replacing the
+  existing threat-classification result.
+- Treat governance blocks as adapter block candidates while preserving the
+  existing effective Block mode as the only enforcement gate.
+- Distinguish governance-policy denials from threat-score denials in adapter
+  diagnostics.
+
 ## 0.6.0 - 2026-08-22
 
 - Add the existing `shadow | warn | block` request mode contract to single and

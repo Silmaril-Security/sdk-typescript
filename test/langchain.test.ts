@@ -217,6 +217,45 @@ describe("LangChain adapter — fail-open / fail-closed", () => {
   });
 });
 
+describe("LangChain adapter — governance", () => {
+  function governedFirewall(action: "allow" | "block"): Firewall {
+    const firewall = new Firewall({
+      apiKey: "sk-test",
+      apiUrl: "https://api.test.invalid/classify",
+    });
+    firewall.classify = vi.fn(async (_text, options) =>
+      Object.freeze({
+        prediction: "BENIGN" as const,
+        score: 0.1,
+        threshold: 0.5,
+        mode: options?.mode ?? "block",
+        governance: { action, ruleId: "policy-rule", policyVersion: "v1" },
+      }),
+    ) as typeof firewall.classify;
+    return firewall;
+  }
+
+  it("throws for a benign governance block only in block mode", async () => {
+    const blockHandler = (await createLangChainHandler(governedFirewall("block"), {
+      mode: "block",
+    })) as unknown as {
+      handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
+    };
+    await expect(blockHandler.handleLLMStart({}, ["hello"], "run-1")).rejects.toThrow(
+      /governance policy/,
+    );
+
+    for (const mode of ["shadow", "warn"] as const) {
+      const handler = (await createLangChainHandler(governedFirewall("block"), {
+        mode,
+      })) as unknown as {
+        handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
+      };
+      await expect(handler.handleLLMStart({}, ["hello"], "run-1")).resolves.toBeUndefined();
+    }
+  });
+});
+
 describe("LangChain adapter — disabled hooks", () => {
   it("skips hooks not in the enabled set", async () => {
     const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
