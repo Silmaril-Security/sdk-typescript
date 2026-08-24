@@ -1,5 +1,7 @@
 // Copyright (c) 2024-2025 Silmaril Security Inc. All rights reserved.
 
+import { readFileSync } from "node:fs";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_TIMEOUT_MS,
@@ -8,6 +10,7 @@ import {
   Outcome,
   SilmarilApiError,
 } from "../src/index.js";
+import { SDK_VERSION } from "../src/firewall.js";
 
 const TEST_API_URL = "https://api.test.invalid/classify";
 const ERROR_BODY_CAP = 1 << 16;
@@ -69,11 +72,21 @@ function withDefaultThresholds(body: unknown): unknown {
 function silmarilMetadata(requestId: string, inputIndex?: number): Record<string, unknown> {
   return {
     sdk_language: "typescript",
-    sdk_version: "0.6.0",
+    sdk_version: SDK_VERSION,
     request_id: requestId,
     ...(inputIndex === undefined ? {} : { input_index: inputIndex }),
   };
 }
+
+describe("SDK release metadata", () => {
+  it("keeps the runtime SDK version aligned with package metadata", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+
+    expect(SDK_VERSION).toBe(packageJson.version);
+  });
+});
 
 describe("Firewall constructor", () => {
   it("requires apiKey", () => {
