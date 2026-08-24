@@ -2,6 +2,12 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.6.2 - 2026-08-24
+
+- Align the runtime `sdk_version` metadata with the published package version.
+- Add a release invariant test so package metadata and runtime provenance cannot
+  drift in future releases.
+
 ## 0.6.1 - 2026-08-24
 
 - Add typed governance request context for agents, hooks, principals, and
