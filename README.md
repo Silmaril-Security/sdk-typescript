@@ -40,7 +40,7 @@ For reproducible installs, pin a tagged release:
 npm install @silmaril-security/sdk@0.6.2
 ```
 
-Requires Node 18 or later.
+Requires Node 20 or later.
 
 The package name and SDK import path are both `@silmaril-security/sdk`, so call
 sites use `Firewall`, `HookLabel`, and `FirewallBlockedException` from that
