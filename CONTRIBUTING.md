@@ -6,7 +6,7 @@ terms in [LICENSE](LICENSE) and the repository's contribution process.
 
 ## Development
 
-Use Node 18 or later.
+Use Node 20 or later.
 
 ```sh
 npm install
@@ -33,4 +33,3 @@ npm pack --dry-run
 The release workflow publishes the version in `package.json` from `main`.
 If a Git tag exists without a corresponding npm version, recover by bumping to
 the next patch version instead of reusing the stuck version.
-
