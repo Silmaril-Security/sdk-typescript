@@ -143,6 +143,24 @@ describe("Firewall constructor", () => {
       new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, timeoutMs: Number.NaN }),
     ).toThrow(/timeoutMs must be a finite non-negative number/);
   });
+
+  it("rejects a timeoutMs a timer cannot represent", () => {
+    // 2^31-1 is the largest delay setTimeout keeps; anything larger silently
+    // collapses to 1 ms and would abort almost immediately.
+    const fw = new Firewall({
+      apiKey: "sk-test",
+      apiUrl: TEST_API_URL,
+      timeoutMs: 2_147_483_647,
+    });
+    expect(fw.timeoutMs).toBe(2_147_483_647);
+
+    expect(
+      () => new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, timeoutMs: 2_147_483_648 }),
+    ).toThrow(/timeoutMs must be at most 2147483647 ms, got 2147483648/);
+    expect(
+      () => new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, timeoutMs: 4_000_000_000 }),
+    ).toThrow(/timeoutMs must be at most 2147483647 ms, got 4000000000/);
+  });
 });
 
 describe("Firewall.classify", () => {
@@ -1122,6 +1140,41 @@ function controlledResponse(status: number, payload: unknown, onRelease: () => v
   } as unknown as Response;
 }
 
+/**
+ * Fetch mock that delivers response headers immediately and leaves the body
+ * read pending until the request signal aborts, at which point the read fails
+ * with `bodyFailure`. Native fetch surfaces a generic `AbortError` here, which
+ * is how a caller's abort reason gets lost during `json()` or an error read.
+ */
+function pendingBodyFetch(
+  status: number,
+  bodyFailure: unknown,
+): { calls: { signal: AbortSignal }[] } {
+  const calls: { signal: AbortSignal }[] = [];
+  const impl = (url: string | URL, init: RequestInit): Promise<Response> => {
+    void url;
+    const signal = init.signal as AbortSignal;
+    calls.push({ signal });
+    const pendingRead = <T,>(): Promise<T> =>
+      new Promise<T>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(bodyFailure), { once: true });
+      });
+    return Promise.resolve({
+      ok: status >= 200 && status < 300,
+      status,
+      statusText: `status-${status}`,
+      json: () => pendingRead<unknown>(),
+      text: () => pendingRead<string>(),
+    } as unknown as Response);
+  };
+  globalThis.fetch = impl as unknown as typeof fetch;
+  return { calls };
+}
+
+function genericAbortError(): DOMException {
+  return new DOMException("The operation was aborted", "AbortError");
+}
+
 /** Lets queued microtasks run without advancing wall-clock or fake timers. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) {
@@ -1407,6 +1460,79 @@ describe("Firewall — cancellation", () => {
     expect(calls).toHaveLength(1);
     // The timeout is per attempt and must not abort the caller's own signal.
     expect(controller.signal.aborted).toBe(false);
+  });
+
+  it("keeps the caller reason when the abort lands during the JSON body read", async () => {
+    const { calls } = pendingBodyFetch(200, genericAbortError());
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const controller = new AbortController();
+    const reason = new Error("client disconnected mid-body");
+
+    const promise = fw.classify("x", { signal: controller.signal });
+    await flush();
+    expect(calls).toHaveLength(1);
+
+    controller.abort(reason);
+
+    await expect(promise).rejects.toBe(reason);
+  });
+
+  it("keeps the caller reason when the abort lands during the error-body read", async () => {
+    const { calls } = pendingBodyFetch(500, genericAbortError());
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const controller = new AbortController();
+    const reason = new Error("client disconnected mid-error-body");
+
+    const promise = fw.classifyBatch(["x"], { signal: controller.signal });
+    await flush();
+    expect(calls).toHaveLength(1);
+
+    controller.abort(reason);
+
+    const error = await promise.catch((e: unknown) => e);
+    expect(error).toBe(reason);
+    expect(error).not.toBeInstanceOf(SilmarilApiError);
+  });
+
+  it("keeps the timeout reason when the attempt times out during the body read", async () => {
+    pendingBodyFetch(200, genericAbortError());
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, timeoutMs: 5 });
+
+    const error = await fw.classify("x").catch((e: unknown) => e);
+
+    expect((error as Error).name).toBe("TimeoutError");
+    expect((error as Error).message).toMatch(/timeout/i);
+  });
+
+  it("leaves a decode failure unchanged when the caller has aborted", async () => {
+    pendingBodyFetch(200, new SyntaxError("unexpected token"));
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const controller = new AbortController();
+
+    const promise = fw.classify("x", { signal: controller.signal });
+    await flush();
+    controller.abort(new Error("caller reason"));
+
+    const error = await promise.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SyntaxError);
+    expect((error as Error).message).toBe("unexpected token");
+  });
+
+  it("rejects with the cancellation reason instead of a serialization failure", async () => {
+    const { calls } = controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const cyclic: Record<string, unknown> = { run_id: "run-cyclic" };
+    cyclic.self = cyclic;
+    const reason = new Error("cancelled before serialization");
+
+    await expect(
+      fw.classify("x", { metadata: cyclic, signal: AbortSignal.abort(reason) }),
+    ).rejects.toBe(reason);
+    expect(calls).toHaveLength(0);
+
+    // Without cancellation the serialization failure still surfaces.
+    await expect(fw.classify("x", { metadata: cyclic })).rejects.toBeInstanceOf(TypeError);
+    expect(calls).toHaveLength(0);
   });
 
   it("does not leak abort listeners onto a reused caller signal", async () => {

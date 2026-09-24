@@ -224,7 +224,7 @@ Outcome taxonomy:
 interface FirewallOptions {
   apiKey: string;                                     // required
   apiUrl: string;                                     // required
-  timeoutMs?: number;                                 // default: 10000 ms
+  timeoutMs?: number;                                 // default: 10000 ms, max 2147483647
   mode?: "shadow" | "warn" | "block";                // omitted uses backend configuration
   shadowMode?: boolean;                               // deprecated legacy mapping
 }

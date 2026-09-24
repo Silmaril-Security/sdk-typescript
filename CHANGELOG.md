@@ -15,6 +15,8 @@ All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
   leak the connection.
 - Serialize each request payload once before retries, so mutating the objects
   passed to a call can no longer change an in-flight logical event.
+- Reject a `timeoutMs` above 2147483647 ms in the constructor instead of
+  letting a timer silently collapse it to an immediate abort.
 - Document that `Firewall` state is immutable and one client is reusable for
   concurrent promises within a runtime, while each worker thread owns its own
   client.

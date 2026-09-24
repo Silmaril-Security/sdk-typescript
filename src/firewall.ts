@@ -27,6 +27,12 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
 const MAX_ERROR_BODY_BYTES = 1 << 16;
+/**
+ * Largest delay a timer can represent. Both `setTimeout` and the
+ * `AbortSignal.timeout` this client used before silently collapse a larger
+ * delay to 1 ms, which would turn a long timeout into an immediate abort.
+ */
+const MAX_TIMEOUT_MS = 2_147_483_647;
 
 interface SingleClassifyPayload {
   text: string;
@@ -253,6 +259,31 @@ async function discardResponseBody(response: Response): Promise<void> {
   }
 }
 
+function isAbortLikeError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const name = (error as { name?: unknown }).name;
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+/**
+ * Reads a decoded body under an attempt signal. Native fetch can reject a body
+ * read that the signal cancelled with a generic `AbortError`, which would drop
+ * the caller's abort reason or the timeout reason. Only abort-caused failures
+ * are rewritten; decode and transport errors are surfaced unchanged.
+ */
+async function readBodyUnderSignal<T>(read: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (signal.aborted && isAbortLikeError(error)) {
+      throw signal.reason;
+    }
+    throw error;
+  }
+}
+
 interface AttemptSignal {
   readonly signal: AbortSignal;
   dispose(): void;
@@ -331,6 +362,11 @@ export class Firewall {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (typeof this.timeoutMs !== "number" || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 0) {
       throw new Error(`Firewall: timeoutMs must be a finite non-negative number, got ${this.timeoutMs}`);
+    }
+    if (this.timeoutMs > MAX_TIMEOUT_MS) {
+      throw new Error(
+        `Firewall: timeoutMs must be at most ${MAX_TIMEOUT_MS} ms, got ${this.timeoutMs}`,
+      );
     }
     this.mode = options.mode ?? legacyMode(options.shadowMode);
     this.shadowMode = this.mode === "shadow";
@@ -417,6 +453,9 @@ export class Firewall {
     callerSignal?: AbortSignal,
     maxRetries: number = DEFAULT_MAX_RETRIES,
   ): Promise<T> {
+    // Cancellation outranks payload serialization, which can itself throw on
+    // cyclic metadata or a throwing `toJSON`.
+    callerSignal?.throwIfAborted();
     // Serialize before the first attempt so retries resend the same logical
     // event even if the caller mutates the objects it passed in.
     const body = JSON.stringify(payload);
@@ -434,13 +473,19 @@ export class Firewall {
         if (response.status !== 429 || attempt === maxRetries) {
           if (!response.ok) {
             const errorBody = await readCappedErrorBody(response);
+            // The capped read swallows its own failures, so an abort during it
+            // would otherwise be reported as a plain API error.
+            attemptSignal.signal.throwIfAborted();
             throw new SilmarilApiError({
               status: response.status,
               statusText: response.statusText,
               body: errorBody,
             });
           }
-          return (await response.json()) as T;
+          return await readBodyUnderSignal<T>(
+            () => response.json() as Promise<T>,
+            attemptSignal.signal,
+          );
         }
         await discardResponseBody(response);
       } finally {
