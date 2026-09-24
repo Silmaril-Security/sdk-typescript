@@ -2,6 +2,25 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.6.3 - 2026-09-24
+
+- Add an optional `signal` option to `classify()` and `classifyBatch()`.
+  Aborting stops the in-flight request or the 429 retry wait, rejects with the
+  signal's reason, and leaves sibling calls on the same client unaffected. An
+  already-aborted signal rejects without sending a request.
+- Combine the caller signal with the existing per-attempt `timeoutMs` without
+  changing timeout behavior, and release the abort listener and timer once an
+  attempt finishes.
+- Discard a retried 429 response body before backing off so a retry does not
+  leak the connection.
+- Serialize each request payload once before retries, so mutating the objects
+  passed to a call can no longer change an in-flight logical event.
+- Reject a `timeoutMs` above 2147483647 ms in the constructor instead of
+  letting a timer silently collapse it to an immediate abort.
+- Document that `Firewall` state is immutable and one client is reusable for
+  concurrent promises within a runtime, while each worker thread owns its own
+  client.
+
 ## 0.6.2 - 2026-08-24
 
 - Align the runtime `sdk_version` metadata with the published package version.

@@ -22,11 +22,17 @@ import type {
   Prediction,
 } from "./types.js";
 
-export const SDK_VERSION = "0.6.2";
+export const SDK_VERSION = "0.6.3";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
 const MAX_ERROR_BODY_BYTES = 1 << 16;
+/**
+ * Largest delay a timer can represent. Both `setTimeout` and the
+ * `AbortSignal.timeout` this client used before silently collapse a larger
+ * delay to 1 ms, which would turn a long timeout into an immediate abort.
+ */
+const MAX_TIMEOUT_MS = 2_147_483_647;
 
 interface SingleClassifyPayload {
   text: string;
@@ -238,6 +244,103 @@ async function readCappedErrorBody(response: Response): Promise<string> {
   return new TextDecoder().decode(body);
 }
 
+/** Releases a response we will not read so a retry does not leak its socket. */
+async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    if (response.body) {
+      if (!response.body.locked) {
+        await response.body.cancel();
+      }
+      return;
+    }
+    await response.text();
+  } catch {
+    // The discarded body belongs to a response we already decided to retry.
+  }
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const name = (error as { name?: unknown }).name;
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+/**
+ * Reads a decoded body under an attempt signal. Native fetch can reject a body
+ * read that the signal cancelled with a generic `AbortError`, which would drop
+ * the caller's abort reason or the timeout reason. Only abort-caused failures
+ * are rewritten; decode and transport errors are surfaced unchanged.
+ */
+async function readBodyUnderSignal<T>(read: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (signal.aborted && isAbortLikeError(error)) {
+      throw signal.reason;
+    }
+    throw error;
+  }
+}
+
+interface AttemptSignal {
+  readonly signal: AbortSignal;
+  dispose(): void;
+}
+
+/**
+ * Combines the per-attempt timeout with an optional caller signal. The caller
+ * signal is shared across sibling calls, so the listener and the timer are
+ * released by `dispose()` once the attempt no longer needs them.
+ */
+function createAttemptSignal(timeoutMs: number, callerSignal?: AbortSignal): AttemptSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(
+      new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+    );
+  }, timeoutMs);
+  const onCallerAbort = (): void => {
+    controller.abort(callerSignal?.reason);
+  };
+  callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+    },
+  };
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Firewall client for the `/classify` API.
+ *
+ * Instance state is set once in the constructor and never mutated by a request,
+ * so one client is safe to share across any number of concurrent `classify()`
+ * and `classifyBatch()` promises within a single JavaScript runtime. Each
+ * worker thread owns its own client: `Firewall` instances are not transferable
+ * across `worker_threads` boundaries.
+ */
 export class Firewall {
   readonly apiKey: string;
   readonly apiUrl: string;
@@ -259,6 +362,11 @@ export class Firewall {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (typeof this.timeoutMs !== "number" || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 0) {
       throw new Error(`Firewall: timeoutMs must be a finite non-negative number, got ${this.timeoutMs}`);
+    }
+    if (this.timeoutMs > MAX_TIMEOUT_MS) {
+      throw new Error(
+        `Firewall: timeoutMs must be at most ${MAX_TIMEOUT_MS} ms, got ${this.timeoutMs}`,
+      );
     }
     this.mode = options.mode ?? legacyMode(options.shadowMode);
     this.shadowMode = this.mode === "shadow";
@@ -324,7 +432,7 @@ export class Firewall {
           : { governance: options.governance[index] }),
       }),
     );
-    const data = await this.postWithRetry<BatchClassifyResponse>(payload);
+    const data = await this.postWithRetry<BatchClassifyResponse>(payload, options.signal);
     return data.predictions.map((p) => blockResultFromResponse(p, requestedMode));
   }
 
@@ -342,29 +450,48 @@ export class Firewall {
 
   private async postWithRetry<T>(
     payload: SingleClassifyPayload | BatchClassifyPayload,
+    callerSignal?: AbortSignal,
     maxRetries: number = DEFAULT_MAX_RETRIES,
   ): Promise<T> {
+    // Cancellation outranks payload serialization, which can itself throw on
+    // cyclic metadata or a throwing `toJSON`.
+    callerSignal?.throwIfAborted();
+    // Serialize before the first attempt so retries resend the same logical
+    // event even if the caller mutates the objects it passed in.
+    const body = JSON.stringify(payload);
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await fetch(this.apiUrl, {
-        method: "POST",
-        headers: this.headers,
-        body: JSON.stringify(payload),
-        redirect: "error",
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-      if (response.status !== 429 || attempt === maxRetries) {
-        if (!response.ok) {
-          const body = await readCappedErrorBody(response);
-          throw new SilmarilApiError({
-            status: response.status,
-            statusText: response.statusText,
-            body,
-          });
+      callerSignal?.throwIfAborted();
+      const attemptSignal = createAttemptSignal(this.timeoutMs, callerSignal);
+      try {
+        const response = await fetch(this.apiUrl, {
+          method: "POST",
+          headers: this.headers,
+          body,
+          redirect: "error",
+          signal: attemptSignal.signal,
+        });
+        if (response.status !== 429 || attempt === maxRetries) {
+          if (!response.ok) {
+            const errorBody = await readCappedErrorBody(response);
+            // The capped read swallows its own failures, so an abort during it
+            // would otherwise be reported as a plain API error.
+            attemptSignal.signal.throwIfAborted();
+            throw new SilmarilApiError({
+              status: response.status,
+              statusText: response.statusText,
+              body: errorBody,
+            });
+          }
+          return await readBodyUnderSignal<T>(
+            () => response.json() as Promise<T>,
+            attemptSignal.signal,
+          );
         }
-        return (await response.json()) as T;
+        await discardResponseBody(response);
+      } finally {
+        attemptSignal.dispose();
       }
-      const waitSeconds = Math.min(2 ** attempt, MAX_BACKOFF_SECONDS);
-      await new Promise<void>((resolve) => setTimeout(resolve, waitSeconds * 1000));
+      await sleep(Math.min(2 ** attempt, MAX_BACKOFF_SECONDS) * 1000, callerSignal);
     }
     throw new Error("Firewall: exhausted retries (unreachable)");
   }
@@ -391,7 +518,7 @@ export class Firewall {
       ...metadataInfo,
       ...(options.governance === undefined ? {} : { governance: options.governance }),
     });
-    const data = await this.postWithRetry<SingleClassifyResponse>(payload);
+    const data = await this.postWithRetry<SingleClassifyResponse>(payload, options.signal);
     return blockResultFromResponse(data, requestedMode);
   }
 }
