@@ -117,6 +117,47 @@ internally applied threshold. Direct calls do not throw on malicious verdicts.
 The Vercel AI SDK and LangChain.js adapters use `result.threshold` and throw
 `FirewallBlockedException` when enforcement is enabled.
 
+## Concurrency and Cancellation
+
+A `Firewall` instance holds no per-request state, so one client can serve any
+number of concurrent calls in a runtime. Responses are matched to their own
+promise regardless of completion order:
+
+```ts
+const [userResult, toolResult] = await Promise.all([
+  fw.classify(userInput, { hook: HookLabel.USER_INPUT }),
+  fw.classify(toolOutput, { hook: HookLabel.TOOL_RESPONSE, toolName: "read_file" }),
+]);
+```
+
+Pass a `signal` to cancel one call without touching its siblings:
+
+```ts
+const controller = new AbortController();
+request.on("close", () => controller.abort());
+
+try {
+  const result = await fw.classify(userInput, {
+    hook: HookLabel.USER_INPUT,
+    signal: controller.signal,
+  });
+  return result;
+} catch (err) {
+  if (controller.signal.aborted) {
+    return; // caller went away
+  }
+  throw err;
+}
+```
+
+Aborting stops the in-flight request or the 429 backoff wait and rejects with
+the signal's reason. An already-aborted signal rejects without sending a
+request. `signal` composes with `timeoutMs`, which still applies per attempt.
+`classifyBatch()` accepts the same option.
+
+Each worker thread owns its own client: construct a `Firewall` inside the
+thread instead of sharing one instance across `worker_threads` boundaries.
+
 ## Handle Outcomes
 
 Direct calls expose typed outcome labels so applications can choose different
@@ -189,8 +230,9 @@ interface FirewallOptions {
 }
 ```
 
-The SDK uses native `fetch`, `AbortSignal.timeout`, and JSON request bodies with
-`x-api-key` and `content-type` headers.
+The SDK uses native `fetch`, an abort signal per request attempt, and JSON
+request bodies with `x-api-key` and `content-type` headers. `timeoutMs` applies
+to each attempt and is combined with any caller-supplied `signal`.
 
 ## Backend Thresholding
 
@@ -439,9 +481,11 @@ const handler = await createLangChainHandler(fw);
 ## Retries
 
 HTTP 429 responses are retried with exponential backoff capped at 30s, up to 5
-times. Redirects are rejected rather than followed. Other non-2xx responses are
-surfaced as `SilmarilApiError`, and transport or timeout failures are surfaced
-unchanged.
+times. The retried response body is discarded before the wait, and each request
+payload is serialized once so every attempt sends the same logical event.
+Redirects are rejected rather than followed. Other non-2xx responses are
+surfaced as `SilmarilApiError`, and transport, timeout, or cancellation failures
+are surfaced unchanged.
 
 ## Development
 

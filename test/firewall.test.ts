@@ -1056,3 +1056,385 @@ describe("Firewall — error handling", () => {
     await expect(fw.classify("x")).rejects.toThrow(/aborted|timeout/i);
   });
 });
+
+interface PendingCall {
+  readonly body: Record<string, unknown>;
+  readonly signal: AbortSignal | undefined;
+  settle(status: number, body: unknown): void;
+  bodyReleased(): boolean;
+}
+
+/**
+ * Fetch mock whose responses are settled explicitly, so a test can interleave
+ * concurrent calls and complete them out of order. Aborting a request signal
+ * rejects that call with the signal's reason, like the platform fetch does.
+ */
+function controlledFetch(): { calls: PendingCall[] } {
+  const calls: PendingCall[] = [];
+  const impl = (url: string | URL, init: RequestInit): Promise<Response> => {
+    void url;
+    let deliver!: (response: Response) => void;
+    let fail!: (error: unknown) => void;
+    const pending = new Promise<Response>((resolve, reject) => {
+      deliver = resolve;
+      fail = reject;
+    });
+    const signal = init.signal ?? undefined;
+    let released = false;
+    signal?.addEventListener("abort", () => fail(signal.reason), { once: true });
+    calls.push({
+      body: JSON.parse(init.body as string) as Record<string, unknown>,
+      signal,
+      settle: (status, body) =>
+        deliver(
+          controlledResponse(status, withDefaultThresholds(body), () => {
+            released = true;
+          }),
+        ),
+      bodyReleased: () => released,
+    });
+    return pending;
+  };
+  globalThis.fetch = impl as unknown as typeof fetch;
+  return { calls };
+}
+
+function controlledResponse(status: number, payload: unknown, onRelease: () => void): Response {
+  const text = typeof payload === "string" ? payload : JSON.stringify(payload);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: `status-${status}`,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+      cancel() {
+        onRelease();
+      },
+    }),
+    json: async () => (typeof payload === "string" ? JSON.parse(text) : payload),
+    text: async () => {
+      onRelease();
+      return text;
+    },
+  } as unknown as Response;
+}
+
+/** Lets queued microtasks run without advancing wall-clock or fake timers. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    await Promise.resolve();
+  }
+}
+
+describe("Firewall — concurrent reuse", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("resolves overlapping calls with their own out-of-order responses", async () => {
+    const { calls } = controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    const first = fw.classify("first", { requestId: "req-1" });
+    const second = fw.classify("second", { requestId: "req-2" });
+    const third = fw.classifyBatch(["third-a", "third-b"], { requestId: "req-3" });
+    await flush();
+
+    expect(calls).toHaveLength(3);
+    calls[2]!.settle(200, {
+      predictions: [
+        { prediction: "MALICIOUS", score: 0.93 },
+        { prediction: "BENIGN", score: 0.03 },
+      ],
+    });
+    calls[1]!.settle(200, { prediction: "MALICIOUS", score: 0.88 });
+    calls[0]!.settle(200, { prediction: "BENIGN", score: 0.11 });
+
+    const [firstResult, secondResult, thirdResult] = await Promise.all([first, second, third]);
+
+    expect(firstResult.score).toBe(0.11);
+    expect(secondResult.score).toBe(0.88);
+    expect(thirdResult.map((result) => result.score)).toEqual([0.93, 0.03]);
+  });
+
+  it("keeps per-call modes, metadata, and request IDs isolated on one client", async () => {
+    const { calls } = controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, mode: "block" });
+
+    const shadow = fw.classify("shadow text", {
+      mode: "shadow",
+      hook: HookLabel.USER_INPUT,
+      metadata: { run_id: "run-shadow" },
+      requestId: "req-shadow",
+    });
+    const warn = fw.classify("warn text", {
+      mode: "warn",
+      toolName: "read_file",
+      metadata: { run_id: "run-warn" },
+      requestId: "req-warn",
+    });
+    const inherited = fw.classify("inherited text", { requestId: "req-inherited" });
+    await flush();
+
+    expect(calls[0]!.body).toEqual({
+      text: "shadow text",
+      mode: "shadow",
+      hook: "user_input",
+      metadata: { run_id: "run-shadow", silmaril: silmarilMetadata("req-shadow") },
+    });
+    expect(calls[1]!.body).toEqual({
+      text: "warn text",
+      mode: "warn",
+      tool_name: "read_file",
+      metadata: { run_id: "run-warn", silmaril: silmarilMetadata("req-warn") },
+    });
+    expect(calls[2]!.body).toEqual({
+      text: "inherited text",
+      mode: "block",
+      metadata: { silmaril: silmarilMetadata("req-inherited") },
+    });
+
+    calls[1]!.settle(200, { prediction: "MALICIOUS", score: 0.7, mode: "warn" });
+    calls[0]!.settle(200, { prediction: "MALICIOUS", score: 0.8, mode: "shadow" });
+    calls[2]!.settle(200, { prediction: "BENIGN", score: 0.1, mode: "block" });
+
+    expect((await shadow).mode).toBe("shadow");
+    expect((await warn).mode).toBe("warn");
+    expect((await inherited).mode).toBe("block");
+
+    // The client carries no per-request state, so it stays reusable.
+    expect(fw.mode).toBe("block");
+    expect(fw.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
+    const reused = fw.classify("after", { requestId: "req-after" });
+    await flush();
+    calls[3]!.settle(200, { prediction: "BENIGN", score: 0.02 });
+    expect((await reused).score).toBe(0.02);
+  });
+});
+
+describe("Firewall — cancellation", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("sends no request when the caller signal is already aborted", async () => {
+    const { calls } = controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const reason = new Error("already gone");
+
+    await expect(
+      fw.classify("x", { signal: AbortSignal.abort(reason) }),
+    ).rejects.toBe(reason);
+    await expect(
+      fw.classifyBatch(["x"], { signal: AbortSignal.abort(reason) }),
+    ).rejects.toBe(reason);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("aborts an in-flight fetch with the caller reason", async () => {
+    const { calls } = controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const controller = new AbortController();
+    const reason = new Error("client disconnected");
+
+    const promise = fw.classify("x", { signal: controller.signal });
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.signal?.aborted).toBe(false);
+
+    controller.abort(reason);
+
+    await expect(promise).rejects.toBe(reason);
+    expect(calls[0]!.signal?.aborted).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("uses the platform AbortError when the caller aborts without a reason", async () => {
+    controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const controller = new AbortController();
+
+    const promise = fw.classifyBatch(["x"], { signal: controller.signal });
+    await flush();
+    controller.abort();
+
+    const error = await promise.catch((e: unknown) => e);
+    expect((error as Error).name).toBe("AbortError");
+  });
+
+  it("aborts during the 429 retry wait without sending another request", async () => {
+    vi.useFakeTimers();
+    try {
+      const { calls } = controlledFetch();
+      const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+      const controller = new AbortController();
+      const reason = new Error("cancelled during backoff");
+
+      const promise = fw.classify("x", { signal: controller.signal });
+      promise.catch(() => {
+        // Keep the unhandled-rejection handler quiet while we drive timers.
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toHaveLength(1);
+
+      calls[0]!.settle(429, "rate limited");
+      await vi.advanceTimersByTimeAsync(0);
+      // The retried response is released before the SDK starts waiting.
+      expect(calls[0]!.bodyReleased()).toBe(true);
+
+      controller.abort(reason);
+
+      await expect(promise).rejects.toBe(reason);
+      expect(calls).toHaveLength(1);
+      // Both the backoff timer and the attempt timeout timer are cleared.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("discards a retried 429 body before backing off and then succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      const { calls } = controlledFetch();
+      const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+      const promise = fw.classify("x", { requestId: "req-retry" });
+      await vi.advanceTimersByTimeAsync(0);
+      calls[0]!.settle(429, "rate limited");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(calls[0]!.bodyReleased()).toBe(true);
+      expect(calls).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls).toHaveLength(2);
+      calls[1]!.settle(200, { prediction: "BENIGN", score: 0.05 });
+
+      await expect(promise).resolves.toMatchObject({ score: 0.05 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resends the payload captured at call time after a 429", async () => {
+    vi.useFakeTimers();
+    try {
+      const { calls } = controlledFetch();
+      const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+      // Nested caller objects are shared by reference with the request
+      // payload, so only serializing once keeps them out of later attempts.
+      const nested: Record<string, unknown> = { run_id: "run-original" };
+      const metadata: Record<string, unknown> = { langgraph: nested };
+
+      const promise = fw.classify("x", { metadata, requestId: "req-frozen" });
+      await vi.advanceTimersByTimeAsync(0);
+      calls[0]!.settle(429, "rate limited");
+
+      // A caller that mutates its own objects mid-flight must not change the
+      // logical event the SDK already accepted.
+      nested.run_id = "run-mutated";
+      nested.injected = true;
+      metadata.extra = "late";
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      calls[1]!.settle(200, { prediction: "BENIGN", score: 0.04 });
+      await promise;
+
+      expect(calls[1]!.body).toEqual(calls[0]!.body);
+      expect(calls[1]!.body).toEqual({
+        text: "x",
+        metadata: {
+          langgraph: { run_id: "run-original" },
+          silmaril: silmarilMetadata("req-frozen"),
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves sibling calls unaffected when one call is aborted", async () => {
+    const { calls } = controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const controller = new AbortController();
+    const shared = new AbortController();
+
+    const cancelled = fw.classify("cancelled", { signal: controller.signal });
+    const survivor = fw.classify("survivor", { signal: shared.signal });
+    const unsignalled = fw.classify("unsignalled");
+    await flush();
+    expect(calls).toHaveLength(3);
+
+    controller.abort(new Error("only this one"));
+    await expect(cancelled).rejects.toThrow(/only this one/);
+
+    expect(calls[1]!.signal?.aborted).toBe(false);
+    expect(calls[2]!.signal?.aborted).toBe(false);
+    calls[1]!.settle(200, { prediction: "BENIGN", score: 0.21 });
+    calls[2]!.settle(200, { prediction: "MALICIOUS", score: 0.99 });
+
+    expect((await survivor).score).toBe(0.21);
+    expect((await unsignalled).score).toBe(0.99);
+    expect(shared.signal.aborted).toBe(false);
+  });
+
+  it("still enforces the per-attempt timeout when a caller signal is supplied", async () => {
+    const { calls } = controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, timeoutMs: 5 });
+    const controller = new AbortController();
+
+    const error = await fw
+      .classify("x", { signal: controller.signal })
+      .catch((e: unknown) => e);
+
+    expect((error as Error).name).toBe("TimeoutError");
+    expect(calls).toHaveLength(1);
+    // The timeout is per attempt and must not abort the caller's own signal.
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it("does not leak abort listeners onto a reused caller signal", async () => {
+    const { calls } = controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const controller = new AbortController();
+    const added: string[] = [];
+    const removed: string[] = [];
+    const signal = controller.signal;
+    const realAdd = signal.addEventListener.bind(signal);
+    const realRemove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = ((type: string, ...rest: unknown[]) => {
+      added.push(type);
+      return (realAdd as (...args: unknown[]) => void)(type, ...rest);
+    }) as typeof signal.addEventListener;
+    signal.removeEventListener = ((type: string, ...rest: unknown[]) => {
+      removed.push(type);
+      return (realRemove as (...args: unknown[]) => void)(type, ...rest);
+    }) as typeof signal.removeEventListener;
+
+    for (let i = 0; i < 3; i++) {
+      const promise = fw.classify(`x-${i}`, { signal });
+      await flush();
+      calls[i]!.settle(200, { prediction: "BENIGN", score: 0.01 });
+      await promise;
+    }
+
+    expect(added.filter((type) => type === "abort")).toHaveLength(3);
+    expect(removed.filter((type) => type === "abort")).toHaveLength(3);
+  });
+});

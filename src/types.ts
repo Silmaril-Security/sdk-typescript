@@ -64,6 +64,11 @@ export interface ClassifyOptions {
   governance?: GovernanceContext;
   metadata?: ClassificationMetadata;
   requestId?: string;
+  /**
+   * Cancels this call only. Aborting stops the in-flight request or retry wait
+   * and rejects with the signal's reason; sibling calls are unaffected.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ClassifyBatchOptions {
@@ -73,6 +78,11 @@ export interface ClassifyBatchOptions {
   governance?: readonly (GovernanceContext | undefined)[];
   metadata?: readonly (ClassificationMetadata | undefined)[];
   requestId?: string;
+  /**
+   * Cancels this batch call only. Aborting stops the in-flight request or retry
+   * wait and rejects with the signal's reason; sibling calls are unaffected.
+   */
+  signal?: AbortSignal;
 }
 
 export interface LangChainAdapterOptions {
