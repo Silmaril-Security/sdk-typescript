@@ -6,6 +6,8 @@ export {
   DEFAULT_TIMEOUT_MS,
 } from "./firewall.js";
 
+export { resolveMcpToolResource } from "./validation.js";
+
 export { FirewallBlockedException, PromptBlockedException, SilmarilApiError } from "./exceptions.js";
 export type { MalformedInputDetails } from "./exceptions.js";
 
@@ -50,10 +52,13 @@ export type {
   Prediction,
   FirewallMode,
   GovernanceAction,
+  GovernanceReason,
   GovernanceResourceKind,
   GovernanceResource,
+  ConcreteGovernanceResource,
   GovernanceContext,
   GovernanceDecision,
+  McpToolResourceResolution,
   ClassificationMetadata,
   FirewallOptions,
   ClassifyOptions,

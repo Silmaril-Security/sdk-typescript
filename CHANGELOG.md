@@ -2,6 +2,17 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.7.0 - 2026-09-26
+
+- Add validated canonical governance resources and identity revisions to single
+  and aligned batch classification requests while preserving raw tool names.
+- Parse canonical resource, identity revision, and identity-unresolved reason
+  fields from governance decisions.
+- Export an MCP tool resource resolver that uses authoritative configured
+  server IDs, exact-match precedence, and explicit unresolved or ambiguous
+  results for supported `mcp__` and `MCP:` host spellings.
+- Pin and verify the vendored governance identity contract.
+
 ## 0.6.3 - 2026-09-24
 
 - Add an optional `signal` option to `classify()` and `classifyBatch()`.

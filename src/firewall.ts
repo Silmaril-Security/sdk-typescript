@@ -7,11 +7,16 @@ import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js"
 import { SilmarilApiError } from "./exceptions.js";
 import { normalizeHarmfulOutcomeMap, normalizePrimaryOutcome } from "./outcomes.js";
 import { sanitizeText } from "./sanitization.js";
+import {
+  validateGovernanceResource,
+  validateIdentityRevision,
+} from "./validation.js";
 import type {
   BlockResult,
   ClassifyBatchOptions,
   ClassifyOptions,
   ClassificationMetadata,
+  ConcreteGovernanceResource,
   FirewallOptions,
   FirewallMode,
   GovernanceContext,
@@ -22,7 +27,7 @@ import type {
   Prediction,
 } from "./types.js";
 
-export const SDK_VERSION = "0.6.3";
+export const SDK_VERSION = "0.7.0";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
@@ -39,6 +44,8 @@ interface SingleClassifyPayload {
   mode?: FirewallMode;
   hook?: string;
   tool_name?: string;
+  resource?: Record<string, string>;
+  identity_revision?: string;
   metadata?: ClassificationMetadata;
 }
 
@@ -47,6 +54,8 @@ interface BatchClassifyPayload {
   mode?: FirewallMode;
   hooks?: readonly string[];
   tool_names?: readonly (string | null)[];
+  resources?: readonly (Record<string, string> | null)[];
+  identity_revision?: string;
   metadata?: readonly (ClassificationMetadata | null)[];
 }
 
@@ -184,6 +193,29 @@ function governanceContextToWire(context: GovernanceContext): Record<string, unk
   };
 }
 
+function governanceResourceToWire(resource: ConcreteGovernanceResource): Record<string, string> {
+  return {
+    kind: resource.kind,
+    id: resource.id,
+    ...(resource.parentId === undefined ? {} : { parent_id: resource.parentId }),
+  };
+}
+
+function governanceResourceFromResponse(
+  name: string,
+  value: unknown,
+): ConcreteGovernanceResource {
+  if (!isRecord(value)) {
+    throw new Error(`Firewall: response ${name} must be an object`);
+  }
+  const resource = {
+    kind: value.kind,
+    id: value.id,
+    ...(value.parent_id === undefined ? {} : { parentId: value.parent_id }),
+  };
+  return validateGovernanceResource(`response ${name}`, resource);
+}
+
 function governanceDecisionFromResponse(value: unknown): GovernanceDecision {
   if (!isRecord(value)) {
     throw new Error("Firewall: response governance must be an object");
@@ -197,10 +229,30 @@ function governanceDecisionFromResponse(value: unknown): GovernanceDecision {
   if (value.rule_id !== undefined && typeof value.rule_id !== "string") {
     throw new Error("Firewall: response governance rule_id must be a string when provided");
   }
+  if (
+    value.identity_revision !== undefined
+    && (typeof value.identity_revision !== "string" || !/\S/u.test(value.identity_revision))
+  ) {
+    throw new Error(
+      "Firewall: response governance identity_revision must be a non-empty string when provided",
+    );
+  }
+  if (value.reason !== undefined && value.reason !== "identity_unresolved") {
+    throw new Error(
+      "Firewall: response governance reason must be identity_unresolved when provided",
+    );
+  }
   return Object.freeze({
     action: value.action,
     ...(value.rule_id === undefined ? {} : { ruleId: value.rule_id }),
     policyVersion: value.policy_version,
+    ...(value.resource === undefined
+      ? {}
+      : { resource: governanceResourceFromResponse("governance.resource", value.resource) }),
+    ...(value.identity_revision === undefined
+      ? {}
+      : { identityRevision: value.identity_revision }),
+    ...(value.reason === undefined ? {} : { reason: value.reason }),
   });
 }
 
@@ -377,6 +429,12 @@ export class Firewall {
   }
 
   async classify(text: string, options: ClassifyOptions = {}): Promise<BlockResult> {
+    if (
+      options.resource !== undefined
+      && (options as ClassifyOptions & { resources?: unknown }).resources !== undefined
+    ) {
+      throw new Error("Firewall: resource and resources cannot both be provided");
+    }
     const requestId = options.requestId ?? randomUUID();
     return this.classifySingle(sanitizeText(text), options, { requestId });
   }
@@ -408,6 +466,17 @@ export class Firewall {
         `Firewall: governance length ${options.governance.length} does not match texts length ${texts.length}`,
       );
     }
+    if (
+      options.resources !== undefined
+      && (options as ClassifyBatchOptions & { resource?: unknown }).resource !== undefined
+    ) {
+      throw new Error("Firewall: resource and resources cannot both be provided");
+    }
+    if (options.resources !== undefined && options.resources.length !== texts.length) {
+      throw new Error(
+        `Firewall: resources length ${options.resources.length} does not match texts length ${texts.length}`,
+      );
+    }
 
     const requestId = options.requestId ?? randomUUID();
     const payload: BatchClassifyPayload = {
@@ -422,6 +491,21 @@ export class Firewall {
     }
     if (options.toolNames && options.toolNames.length > 0) {
       payload.tool_names = options.toolNames.map((t) => (t === undefined ? null : t));
+    }
+    if (options.resources !== undefined) {
+      payload.resources = options.resources.map((resource, index) =>
+        resource === undefined || resource === null
+          ? null
+          : governanceResourceToWire(
+              validateGovernanceResource(`resources[${index}]`, resource),
+            ),
+      );
+    }
+    if (options.identityRevision !== undefined) {
+      payload.identity_revision = validateIdentityRevision(
+        "identityRevision",
+        options.identityRevision,
+      );
     }
     payload.metadata = texts.map((_, index) =>
       withSdkMetadata(options.metadata?.[index], {
@@ -513,6 +597,17 @@ export class Firewall {
     }
     if (options.toolName !== undefined) {
       payload.tool_name = options.toolName;
+    }
+    if (options.resource !== undefined) {
+      payload.resource = governanceResourceToWire(
+        validateGovernanceResource("resource", options.resource),
+      );
+    }
+    if (options.identityRevision !== undefined) {
+      payload.identity_revision = validateIdentityRevision(
+        "identityRevision",
+        options.identityRevision,
+      );
     }
     payload.metadata = withSdkMetadata(options.metadata, {
       ...metadataInfo,
