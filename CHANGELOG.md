@@ -13,6 +13,12 @@ All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
   results for supported `mcp__` and `MCP:` host spellings.
 - Pin and verify the vendored governance identity contract.
 
+Compatibility: deploy compatible Firewall readers before installing this SDK.
+Upgrade plugins and the separately bundled macOS adapters after the SDK is
+published. Keep existing policies on their current schema until every
+enforcement consumer in the target scope is verified against contract 1.0.0;
+then explicitly activate runtime schema 6.
+
 ## 0.6.3 - 2026-09-24
 
 - Add an optional `signal` option to `classify()` and `classifyBatch()`.
