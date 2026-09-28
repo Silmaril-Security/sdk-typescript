@@ -412,6 +412,36 @@ describe("resolveMcpToolResource", () => {
     });
   });
 
+  it("keeps two complete spellings ambiguous when a separator sits in the key or tool id", () => {
+    expect(resolveMcpToolResource({
+      servers: [{ id: "git" }],
+      tools: [{ id: "hub__search", parentId: "git" }],
+    }, "mcp__git__hub__search")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "hub__search", parentId: "git" },
+    });
+    expect(resolveMcpToolResource({
+      servers: [{ id: "git" }, { id: "git__hub" }],
+      tools: [
+        { id: "hub__search", parentId: "git" },
+        { id: "search", parentId: "git__hub" },
+      ],
+    }, "mcp__git__hub__search")).toEqual({
+      status: "ambiguous",
+      serverIds: ["git", "git__hub"],
+    });
+    expect(resolveMcpToolResource({
+      servers: [{ id: "org" }, { id: "org:repo" }],
+      tools: [
+        { id: "repo:search", parentId: "org" },
+        { id: "search", parentId: "org:repo" },
+      ],
+    }, "MCP:org:repo:search")).toEqual({
+      status: "ambiguous",
+      serverIds: ["org", "org:repo"],
+    });
+  });
+
   it("uses a configured server id that itself contains the dispatch separator", () => {
     expect(resolveMcpToolResource(["prod__west"], "mcp__prod__west__search")).toEqual({
       status: "resolved",

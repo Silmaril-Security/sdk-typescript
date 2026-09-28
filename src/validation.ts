@@ -202,6 +202,8 @@ function fullCatalogMatches(catalog: McpDispatchCatalog, toolName: string): Disp
       continue;
     }
     for (const key of dispatchKeys(server)) {
+      // A separator inside a key or tool id can reconstruct the same raw name
+      // as another configured pair. Those pairs stay distinct candidates.
       if (toolName !== `mcp__${key}__${tool.id}` && toolName !== `MCP:${key}:${tool.id}`) {
         continue;
       }
