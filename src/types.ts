@@ -157,6 +157,22 @@ export interface MiddlewareOptions {
   onClassify?: (event: ClassifyEvent) => void;
 }
 
+export interface McpConfiguredServer {
+  readonly id: string;
+  readonly aliases?: readonly string[];
+}
+
+export interface McpConfiguredTool {
+  readonly id: string;
+  readonly parentId: string;
+}
+
+/** Configured MCP dispatch catalog. Omit `tools` for a server-only catalog. */
+export interface McpDispatchCatalog {
+  readonly servers: readonly McpConfiguredServer[];
+  readonly tools?: readonly McpConfiguredTool[];
+}
+
 export type McpToolResourceResolution =
   | {
       readonly status: "resolved";

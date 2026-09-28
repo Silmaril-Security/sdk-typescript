@@ -325,6 +325,28 @@ text-prefix integrations. `classify()` and `classifyBatch()` send hook and tool
 metadata as structured JSON fields, so normal callers should use the `hook`,
 `toolName`, `hooks`, and `toolNames` options.
 
+## MCP dispatch identity
+
+`resolveMcpToolResource` turns a raw `mcp__` or `MCP:` tool name into one
+canonical `mcp_tool` resource. Pass configured server ids, or a catalog:
+
+```ts
+resolveMcpToolResource(["git-hub"], "mcp__git_hub__search");
+
+resolveMcpToolResource({
+  servers: [{ id: "git-hub", aliases: ["git_hub"] }],
+  tools: [{ id: "search", parentId: "git-hub" }],
+}, "mcp__git_hub__search");
+```
+
+Exact server ids, explicit aliases, and the underscore spelling of each
+hyphenated server id are equal candidates. A catalog with `tools` matches only
+complete configured spellings, so one configured tool can select a shared
+server key. A server-only catalog uses the entire nonempty suffix as the tool
+id, including `__` or `:`. More than one parent or tool is `ambiguous`.
+`classify()` still sends a caller-supplied `resource` unchanged, including
+when the raw tool name is ambiguous, and still sends the raw `toolName`.
+
 ## Request Metadata
 
 Use `metadata` to forward application or integration identifiers to the

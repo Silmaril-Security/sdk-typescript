@@ -3,6 +3,8 @@
 
 import type {
   ConcreteGovernanceResource,
+  McpConfiguredServer,
+  McpDispatchCatalog,
   McpToolResourceResolution,
 } from "./types.js";
 
@@ -107,40 +109,82 @@ function toolIdAfterPrefix(body: string, prefix: string): string | undefined {
   return undefined;
 }
 
-/**
- * Every configured ID can match as itself and, when it contains hyphens, as
- * its host alias. Identical parent/tool pairs count once.
- */
-function canonicalDispatchMatches(
-  serverIds: readonly string[],
+interface DispatchMatch {
+  readonly serverId: string;
+  readonly toolId: string;
+}
+
+function rememberMatch(
+  matches: DispatchMatch[],
+  seen: Set<string>,
+  serverId: string,
+  toolId: string,
+): void {
+  const canonical = `${serverId}\u0000${toolId}`;
+  if (seen.has(canonical)) {
+    return;
+  }
+  seen.add(canonical);
+  matches.push({ serverId, toolId });
+}
+
+/** Exact id, explicit aliases, and the hyphen-to-underscore spelling of the id. */
+function dispatchKeys(server: McpConfiguredServer): readonly string[] {
+  const keys = new Set<string>();
+  if (server.id.length > 0) {
+    keys.add(server.id);
+    keys.add(hostAlias(server.id));
+  }
+  for (const alias of server.aliases ?? []) {
+    if (alias.length > 0) {
+      keys.add(alias);
+    }
+  }
+  keys.delete("");
+  return [...keys];
+}
+
+function serverOnlyMatches(
+  servers: readonly McpConfiguredServer[],
   body: string,
   delimiter: "__" | ":",
-): Array<{ readonly serverId: string; readonly toolId: string }> {
-  const matches: Array<{ readonly serverId: string; readonly toolId: string }> = [];
+): DispatchMatch[] {
+  const matches: DispatchMatch[] = [];
   const seen = new Set<string>();
-  for (const serverId of serverIds) {
-    if (serverId.length === 0) {
-      continue;
-    }
-    const toolIds = new Set<string>();
-    const exactToolId = toolIdAfterPrefix(body, `${serverId}${delimiter}`);
-    if (exactToolId !== undefined) {
-      toolIds.add(exactToolId);
-    }
-    const alias = hostAlias(serverId);
-    if (alias !== serverId) {
-      const aliasToolId = toolIdAfterPrefix(body, `${alias}${delimiter}`);
-      if (aliasToolId !== undefined) {
-        toolIds.add(aliasToolId);
-      }
-    }
-    for (const toolId of toolIds) {
-      const canonical = `${serverId}\u0000${toolId}`;
-      if (seen.has(canonical)) {
+  for (const server of servers) {
+    for (const key of dispatchKeys(server)) {
+      const toolId = toolIdAfterPrefix(body, `${key}${delimiter}`);
+      if (toolId === undefined) {
         continue;
       }
-      seen.add(canonical);
-      matches.push({ serverId, toolId });
+      rememberMatch(matches, seen, server.id, toolId);
+    }
+  }
+  return matches;
+}
+
+function fullCatalogMatches(catalog: McpDispatchCatalog, toolName: string): DispatchMatch[] {
+  const servers = new Map<string, McpConfiguredServer>();
+  for (const server of catalog.servers) {
+    if (!servers.has(server.id)) {
+      servers.set(server.id, server);
+    }
+  }
+  const matches: DispatchMatch[] = [];
+  const seen = new Set<string>();
+  for (const tool of catalog.tools ?? []) {
+    if (tool.id.length === 0) {
+      continue;
+    }
+    const server = servers.get(tool.parentId);
+    if (server === undefined) {
+      continue;
+    }
+    for (const key of dispatchKeys(server)) {
+      if (toolName !== `mcp__${key}__${tool.id}` && toolName !== `MCP:${key}:${tool.id}`) {
+        continue;
+      }
+      rememberMatch(matches, seen, server.id, tool.id);
     }
   }
   return matches;
@@ -153,24 +197,13 @@ function resolvedMcpTool(serverId: string, toolId: string): McpToolResourceResol
   });
 }
 
-/**
- * Resolves a raw host dispatch only when every exact and hyphen-to-underscore
- * reading names the same configured parent and tool.
- */
-export function resolveMcpToolResource(
-  configuredServerIds: readonly string[],
-  toolName: string,
-): McpToolResourceResolution {
-  const dispatch = mcpDispatchBody(toolName);
-  if (dispatch === undefined) {
-    return Object.freeze({ status: "unresolved", reason: "unrecognized_tool_name" });
-  }
+function isDispatchCatalog(
+  configured: readonly string[] | McpDispatchCatalog,
+): configured is McpDispatchCatalog {
+  return !Array.isArray(configured);
+}
 
-  const matches = canonicalDispatchMatches(
-    [...new Set(configuredServerIds)],
-    dispatch.body,
-    dispatch.delimiter,
-  );
+function finishDispatchMatches(matches: readonly DispatchMatch[]): McpToolResourceResolution {
   if (matches.length > 1) {
     return Object.freeze({
       status: "ambiguous",
@@ -182,6 +215,38 @@ export function resolveMcpToolResource(
     return resolvedMcpTool(match.serverId, match.toolId);
   }
   return Object.freeze({ status: "unresolved", reason: "unknown_server" });
+}
+
+/**
+ * Resolves a raw `mcp__` or `MCP:` dispatch name.
+ * A string array is a server-only catalog. A catalog object with `tools`
+ * matches complete configured spellings; without `tools`, every nonempty
+ * suffix after a server key is the tool id. Exact ids, explicit aliases, and
+ * hyphen-to-underscore server spellings are equal candidates.
+ */
+export function resolveMcpToolResource(
+  configuredServerIds: readonly string[],
+  toolName: string,
+): McpToolResourceResolution;
+export function resolveMcpToolResource(
+  catalog: McpDispatchCatalog,
+  toolName: string,
+): McpToolResourceResolution;
+export function resolveMcpToolResource(
+  configured: readonly string[] | McpDispatchCatalog,
+  toolName: string,
+): McpToolResourceResolution {
+  const catalog: McpDispatchCatalog = isDispatchCatalog(configured)
+    ? configured
+    : { servers: configured.map((id) => ({ id })) };
+  const dispatch = mcpDispatchBody(toolName);
+  if (dispatch === undefined) {
+    return Object.freeze({ status: "unresolved", reason: "unrecognized_tool_name" });
+  }
+  const matches = catalog.tools === undefined
+    ? serverOnlyMatches(catalog.servers, dispatch.body, dispatch.delimiter)
+    : fullCatalogMatches(catalog, toolName);
+  return finishDispatchMatches(matches);
 }
 
 export function validateThreshold(name: string, value: unknown): number {

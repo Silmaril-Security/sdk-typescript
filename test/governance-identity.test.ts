@@ -9,6 +9,7 @@ import {
   Firewall,
   resolveMcpToolResource,
   type ConcreteGovernanceResource,
+  type McpDispatchCatalog,
 } from "../src/index.js";
 
 const API_URL = "https://api.test.invalid/classify";
@@ -451,11 +452,15 @@ describe("resolveMcpToolResource", () => {
     mcp_dispatch_cases: readonly DispatchCase[];
   }>("matching.json").mcp_dispatch_cases;
 
+  it("covers every final dispatch vector", () => {
+    expect(dispatchCases).toHaveLength(19);
+  });
+
   it.each(dispatchCases.map((dispatchCase) => [dispatchCase.name, dispatchCase] as const))(
     "dispatch vector: %s",
     async (_name, dispatchCase) => {
-      const serverIds = dispatchCase.catalog.servers.map((server) => server.id);
-      const resolution = resolveMcpToolResource(serverIds, dispatchCase.raw_name);
+      const catalog = toDispatchCatalog(dispatchCase);
+      const resolution = resolveMcpToolResource(catalog, dispatchCase.raw_name);
 
       if (dispatchCase.authoritative_resource !== undefined) {
         expect(resolution.status).toBe("ambiguous");
@@ -491,22 +496,6 @@ describe("resolveMcpToolResource", () => {
         return;
       }
 
-      if (dispatchCase.catalog.tools !== undefined) {
-        const candidates = exactConfiguredSpellings(dispatchCase);
-        if (dispatchCase.result !== null) {
-          expect(candidates).toEqual([
-            {
-              parentId: dispatchCase.result.parent_id,
-              toolId: dispatchCase.result.id,
-            },
-          ]);
-        } else if (dispatchCase.failure === "ambiguous") {
-          expect(candidates.length).toBeGreaterThan(1);
-        } else {
-          expect(candidates).toEqual([]);
-        }
-      }
-
       if (dispatchCase.result !== null) {
         expect(resolution).toEqual({
           status: "resolved",
@@ -518,28 +507,6 @@ describe("resolveMcpToolResource", () => {
         });
         return;
       }
-
-      // The vendored server-only vector still calls a separator inside the
-      // unmatched suffix ambiguous. The corrected rule keeps that whole suffix
-      // as one tool id when it is the only candidate.
-      if (
-        dispatchCase.failure === "ambiguous"
-        && dispatchCase.catalog.tools === undefined
-        && resolution.status === "resolved"
-        && serverIds.length === 1
-      ) {
-        const serverId = serverIds[0]!;
-        const prefix = `mcp__${serverId}__`;
-        expect(dispatchCase.raw_name.startsWith(prefix)).toBe(true);
-        const toolId = dispatchCase.raw_name.slice(prefix.length);
-        expect(toolId.includes("__") || toolId.includes(":")).toBe(true);
-        expect(resolution).toEqual({
-          status: "resolved",
-          resource: { kind: "mcp_tool", id: toolId, parentId: serverId },
-        });
-        return;
-      }
-
       if (dispatchCase.failure === "ambiguous") {
         expect(resolution.status).toBe("ambiguous");
         return;
@@ -550,35 +517,20 @@ describe("resolveMcpToolResource", () => {
   );
 });
 
-function exactConfiguredSpellings(
-  dispatchCase: DispatchCase,
-): Array<{ readonly parentId: string; readonly toolId: string }> {
-  const candidates: Array<{ readonly parentId: string; readonly toolId: string }> = [];
-  const seen = new Set<string>();
-  for (const server of dispatchCase.catalog.servers) {
-    const keys = new Set<string>([server.id, server.id.replaceAll("-", "_")]);
-    for (const alias of server.aliases ?? []) {
-      keys.add(alias);
-    }
-    for (const tool of dispatchCase.catalog.tools ?? []) {
-      if (tool.parent_id !== server.id) {
-        continue;
-      }
-      for (const key of keys) {
-        if (
-          dispatchCase.raw_name !== `mcp__${key}__${tool.id}`
-          && dispatchCase.raw_name !== `MCP:${key}:${tool.id}`
-        ) {
-          continue;
-        }
-        const canonical = `${server.id}\u0000${tool.id}`;
-        if (seen.has(canonical)) {
-          continue;
-        }
-        seen.add(canonical);
-        candidates.push({ parentId: server.id, toolId: tool.id });
-      }
-    }
+function toDispatchCatalog(dispatchCase: DispatchCase): McpDispatchCatalog {
+  const servers = dispatchCase.catalog.servers.map((server) =>
+    server.aliases === undefined
+      ? { id: server.id }
+      : { id: server.id, aliases: server.aliases },
+  );
+  if (dispatchCase.catalog.tools === undefined) {
+    return { servers };
   }
-  return candidates;
+  return {
+    servers,
+    tools: dispatchCase.catalog.tools.map((tool) => ({
+      id: tool.id,
+      parentId: tool.parent_id,
+    })),
+  };
 }
