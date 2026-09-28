@@ -59,6 +59,51 @@ function hostAlias(serverId: string): string {
   return serverId.replaceAll("-", "_");
 }
 
+function hasLineTerminator(value: string): boolean {
+  return value.includes("\n")
+    || value.includes("\r")
+    || value.includes("\u2028")
+    || value.includes("\u2029");
+}
+
+/**
+ * Splits a dispatch name into nonempty server and tool segments.
+ * `mcp__` uses the first `__` after at least one server character.
+ * `MCP:` uses the first `:`, so the server cannot contain a colon.
+ * Line terminators stay rejected where an anchored dot would reject them.
+ */
+function parseMcpDispatchName(
+  toolName: string,
+): { readonly serverId: string; readonly toolId: string } | undefined {
+  if (toolName.startsWith("mcp__")) {
+    const body = toolName.slice("mcp__".length);
+    const delimiter = body.indexOf("__", 1);
+    if (delimiter < 1 || hasLineTerminator(body)) {
+      return undefined;
+    }
+    const toolId = body.slice(delimiter + 2);
+    if (toolId.length === 0) {
+      return undefined;
+    }
+    return { serverId: body.slice(0, delimiter), toolId };
+  }
+
+  if (toolName.startsWith("MCP:")) {
+    const body = toolName.slice("MCP:".length);
+    const delimiter = body.indexOf(":");
+    if (delimiter < 1) {
+      return undefined;
+    }
+    const toolId = body.slice(delimiter + 1);
+    if (toolId.length === 0 || hasLineTerminator(toolId)) {
+      return undefined;
+    }
+    return { serverId: body.slice(0, delimiter), toolId };
+  }
+
+  return undefined;
+}
+
 /**
  * Resolves a host MCP dispatch name only against authoritative configured IDs.
  * Exact configured IDs win before a unique host-safe alias.
@@ -67,13 +112,13 @@ export function resolveMcpToolResource(
   configuredServerIds: readonly string[],
   toolName: string,
 ): McpToolResourceResolution {
-  const match = /^mcp__(.+?)__(.+)$/u.exec(toolName) ?? /^MCP:([^:]+):(.+)$/u.exec(toolName);
-  if (!match?.[1] || !match[2]) {
+  const parsed = parseMcpDispatchName(toolName);
+  if (parsed === undefined) {
     return Object.freeze({ status: "unresolved", reason: "unrecognized_tool_name" });
   }
 
-  const dispatchServerId = match[1];
-  const toolId = match[2];
+  const dispatchServerId = parsed.serverId;
+  const toolId = parsed.toolId;
   const uniqueServerIds = [...new Set(configuredServerIds)];
   const exact = uniqueServerIds.find((serverId) => serverId === dispatchServerId);
   if (exact !== undefined) {

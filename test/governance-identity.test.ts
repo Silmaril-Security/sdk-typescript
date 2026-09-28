@@ -234,4 +234,59 @@ describe("resolveMcpToolResource", () => {
       reason: "unrecognized_tool_name",
     });
   });
+
+  it("splits on the first delimiter and keeps later delimiter characters in the tool id", () => {
+    expect(resolveMcpToolResource(["github"], "mcp__github__search__more")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "search__more", parentId: "github" },
+    });
+    expect(resolveMcpToolResource(["github"], "MCP:github:search:more")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "search:more", parentId: "github" },
+    });
+  });
+
+  it("leaves long delimiter runs and incomplete dispatch names unresolved", () => {
+    const configured = ["github", "git-hub"];
+    const unrecognized = { status: "unresolved", reason: "unrecognized_tool_name" } as const;
+    const repeatedDelimiters = "__".repeat(20_000);
+
+    expect(resolveMcpToolResource(configured, `mcp__${"a_".repeat(20_000)}search`)).toEqual(
+      unrecognized,
+    );
+    expect(resolveMcpToolResource(configured, `MCP:${":".repeat(20_000)}search`)).toEqual(
+      unrecognized,
+    );
+    expect(resolveMcpToolResource(configured, `mcp__${"_".repeat(20_000)}search`)).toEqual({
+      status: "unresolved",
+      reason: "unknown_server",
+    });
+    expect(resolveMcpToolResource(configured, `mcp__github__search${repeatedDelimiters}`)).toEqual({
+      status: "resolved",
+      resource: {
+        kind: "mcp_tool",
+        id: `search${repeatedDelimiters}`,
+        parentId: "github",
+      },
+    });
+
+    for (const toolName of [
+      "mcp____search",
+      "mcp__github__",
+      "MCP::search",
+      "MCP:github:",
+      "mcp__git\nhub__search",
+      "mcp__github__search\n",
+      "mcp__github__search\r",
+      "MCP:github:sea\nrch",
+      "MCP:github:search\n",
+    ]) {
+      expect(resolveMcpToolResource(configured, toolName)).toEqual(unrecognized);
+    }
+
+    expect(resolveMcpToolResource(["git\nhub"], "MCP:git\nhub:search")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "search", parentId: "git\nhub" },
+    });
+  });
 });
