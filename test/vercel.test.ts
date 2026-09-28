@@ -8,6 +8,7 @@ interface ClassifyCall {
   text: string;
   hook: HookLabel | undefined;
   toolName: string | undefined;
+  agentModelId?: unknown;
 }
 
 function makeFirewall(
@@ -20,7 +21,12 @@ function makeFirewall(
   });
   let i = 0;
   firewall.classify = vi.fn(async (text, options) => {
-    calls.push({ text, hook: options?.hook, toolName: options?.toolName });
+    calls.push({
+      text,
+      hook: options?.hook,
+      toolName: options?.toolName,
+      agentModelId: (options?.metadata?.silmaril as Record<string, unknown> | undefined)?.agent_model_id,
+    });
     const r = scores[Math.min(i, scores.length - 1)];
     i++;
     return Object.freeze({
@@ -34,6 +40,26 @@ function makeFirewall(
 }
 
 describe("Vercel middleware — wrapGenerate", () => {
+  it("uses the selected AI SDK model for each call", async () => {
+    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const middleware = createMiddleware(firewall, { scanOutput: true });
+    for (const modelId of ["provider/model-a", "provider/model-b"]) {
+      await middleware.wrapGenerate({
+        model: { modelId },
+        params: { prompt: [{ role: "user", content: "Hello" }] },
+        doGenerate: async () => ({ text: "response" }),
+      });
+    }
+    expect(calls.map((call) => call.agentModelId)).toEqual([
+      "provider/model-a", "provider/model-a", "provider/model-b", "provider/model-b",
+    ]);
+    await middleware.wrapGenerate({
+      params: { prompt: [{ role: "user", content: "Unknown" }] },
+      doGenerate: async () => ({ text: "response" }),
+    });
+    expect(calls.slice(-2).map((call) => call.agentModelId)).toEqual([undefined, undefined]);
+  });
+
   it("classifies the prompt before calling doGenerate (benign passes)", async () => {
     const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
     const middleware = createMiddleware(firewall);

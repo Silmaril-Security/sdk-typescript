@@ -1,13 +1,14 @@
 // Copyright (c) 2024-2025 Silmaril Security Inc. All rights reserved.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ALL_HOOKS, Firewall, HookLabel, PromptBlockedException } from "../src/index.js";
+import { ALL_HOOKS, Firewall, FirewallHook, HookLabel, PromptBlockedException } from "../src/index.js";
 import { createLangChainHandler } from "../src/adapters/langchain.js";
 
 interface ClassifyCall {
   text: string;
   hook: HookLabel | undefined;
   toolName: string | undefined;
+  metadata?: unknown;
 }
 
 function makeFirewall(
@@ -23,7 +24,12 @@ function makeFirewall(
   });
   let i = 0;
   firewall.classify = vi.fn(async (text, options) => {
-    calls.push({ text, hook: options?.hook, toolName: options?.toolName });
+    calls.push({
+      text,
+      hook: options?.hook,
+      toolName: options?.toolName,
+      ...(options?.metadata !== undefined ? { metadata: options.metadata } : {}),
+    });
     const r = scores[Math.min(i, scores.length - 1)];
     i++;
     if (r instanceof Error) {
@@ -539,5 +545,347 @@ describe("LangChain adapter — shadow mode", () => {
       PromptBlockedException,
     );
     expect(loggerCalls.some((c) => c.message.includes("onClassify callback threw"))).toBe(true);
+  });
+});
+
+describe("LangChain adapter — agent model id", () => {
+  const userMessages = (content: string): Array<Array<{ role: string; content: string }>> => [
+    [{ role: "user", content }],
+  ];
+  const llmOutput = (text: string): { generations: Array<Array<{ text: string }>> } => ({
+    generations: [[{ text }]],
+  });
+
+  interface ModelHandler {
+    handleChatModelStart: (
+      llm: unknown,
+      messages: Array<Array<{ role: string; content: string }>>,
+      runId: string,
+      parentRunId?: string,
+      extraParams?: Record<string, unknown>,
+      tags?: string[],
+      metadata?: Record<string, unknown>,
+    ) => Promise<void>;
+    handleLLMStart: (
+      llm: unknown,
+      prompts: string[],
+      runId: string,
+      parentRunId?: string,
+      extraParams?: Record<string, unknown>,
+      tags?: string[],
+      metadata?: Record<string, unknown>,
+    ) => Promise<void>;
+    handleLLMEnd: (output: unknown, runId: string) => Promise<void>;
+    handleLLMError: (err: unknown, runId: string) => Promise<void>;
+    handleToolStart: (tool: { name?: string } | undefined, input: string, runId: string) => Promise<void>;
+    handleToolEnd: (
+      output: unknown,
+      runId: string,
+      parentRunId?: string,
+      tags?: string[],
+      kwargs?: { name?: string },
+    ) => Promise<void>;
+    handleRetrieverStart: (retriever: unknown, query: string, runId: string) => Promise<void>;
+    handleRetrieverEnd: (documents: ReadonlyArray<{ pageContent?: string }>, runId: string) => Promise<void>;
+  }
+
+  async function buildHandler(
+    scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number } | Error> = [
+      { prediction: "BENIGN", score: 0.1 },
+    ],
+    hooks: ReadonlySet<FirewallHook> = ALL_HOOKS,
+  ): Promise<{ calls: ClassifyCall[]; handler: ModelHandler }> {
+    const { firewall, calls } = makeFirewall(scores);
+    const handler = (await createLangChainHandler(firewall, { hooks })) as unknown as ModelHandler;
+    return { calls, handler };
+  }
+
+  it("sends a selected model id from invocation params, model metadata, or serialized kwargs", async () => {
+    const { calls, handler } = await buildHandler();
+    const cases: Array<{
+      llm: unknown;
+      extraParams?: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+      expected: string;
+      text: string;
+    }> = [
+      {
+        text: "from-kwargs",
+        llm: { kwargs: { model: "  gpt-4o  " } },
+        expected: "gpt-4o",
+      },
+      {
+        text: "from-model-name",
+        llm: { kwargs: { modelName: "gpt-4o-mini" } },
+        expected: "gpt-4o-mini",
+      },
+      {
+        text: "from-invocation",
+        llm: {
+          id: ["langchain_openai", "chat_models", "ChatOpenAI"],
+          kwargs: { model: "constructor-model" },
+        },
+        extraParams: {
+          invocation_params: { model_name: "invocation-name", model: "selected-model" },
+        },
+        metadata: { ls_model_name: "metadata-model" },
+        expected: "selected-model",
+      },
+      {
+        text: "from-metadata",
+        llm: { kwargs: { model: "constructor-model" } },
+        extraParams: { invocation_params: { temperature: 0, model: "   " } },
+        metadata: { ls_model_name: " metadata-model " },
+        expected: "metadata-model",
+      },
+      {
+        text: "from-model-id",
+        llm: { kwargs: {} },
+        extraParams: { invocation_params: { modelId: "anthropic.claude-3" } },
+        expected: "anthropic.claude-3",
+      },
+    ];
+
+    for (const [index, item] of cases.entries()) {
+      await handler.handleChatModelStart(
+        item.llm,
+        userMessages(item.text),
+        `chat-${index}`,
+        undefined,
+        item.extraParams,
+        undefined,
+        item.metadata,
+      );
+    }
+    await handler.handleLLMStart(
+      { kwargs: { model_name: "text-davinci-003" } },
+      ["complete this"],
+      "llm-start",
+    );
+
+    expect(calls.map((call) => ({ text: call.text, metadata: call.metadata }))).toEqual([
+      ...cases.map((item) => ({
+        text: item.text,
+        metadata: { silmaril: { agent_model_id: item.expected } },
+      })),
+      {
+        text: "complete this",
+        metadata: { silmaril: { agent_model_id: "text-davinci-003" } },
+      },
+    ]);
+  });
+
+  it("omits agent_model_id when no trustworthy model id is present", async () => {
+    const { calls, handler } = await buildHandler();
+    await handler.handleChatModelStart(
+      {
+        lc: 1,
+        type: "constructor",
+        id: ["langchain_openai", "chat_models", "ChatOpenAI"],
+        name: "ChatOpenAI",
+        kwargs: { temperature: 0, model: { id: "gpt-4o" }, openai_api_key: "sk-test" },
+      },
+      userMessages("hello"),
+      "run-missing",
+      undefined,
+      { invocation_params: "not-an-object" },
+      undefined,
+      { ls_model_name: "  ", model: "user-metadata-is-not-a-model-id" },
+    );
+    await handler.handleLLMStart(
+      { id: ["langchain", "llms", "openai", "OpenAI"], name: "OpenAI" },
+      ["hello llm"],
+      "run-llm-missing",
+    );
+
+    expect(calls.map((call) => call.text)).toEqual(["hello", "hello llm"]);
+    expect(calls.every((call) => call.metadata === undefined)).toBe(true);
+  });
+
+  it("attributes each same-run output to the model selected for that run", async () => {
+    const { calls, handler } = await buildHandler();
+    await handler.handleChatModelStart(
+      { kwargs: { model: "provider/model-a" } },
+      userMessages("hello-a"),
+      "run-a",
+    );
+    await handler.handleLLMStart(
+      { kwargs: { model: "constructor-b" } },
+      ["hello-b"],
+      "run-b",
+      undefined,
+      { invocation_params: { model: "provider/model-b" } },
+    );
+    await handler.handleLLMEnd(llmOutput("out-b"), "run-b");
+    await handler.handleLLMEnd(llmOutput("out-a"), "run-a");
+    await handler.handleChatModelStart(
+      { kwargs: { model: "gpt-4o" } },
+      [[{ role: "system", content: "sys" }]],
+      "run-sys",
+    );
+    await handler.handleLLMEnd(llmOutput("out-sys"), "run-sys");
+
+    expect(calls.map((call) => ({ text: call.text, metadata: call.metadata }))).toEqual([
+      { text: "hello-a", metadata: { silmaril: { agent_model_id: "provider/model-a" } } },
+      { text: "hello-b", metadata: { silmaril: { agent_model_id: "provider/model-b" } } },
+      { text: "out-b", metadata: { silmaril: { agent_model_id: "provider/model-b" } } },
+      { text: "out-a", metadata: { silmaril: { agent_model_id: "provider/model-a" } } },
+      { text: "out-sys", metadata: { silmaril: { agent_model_id: "gpt-4o" } } },
+    ]);
+  });
+
+  it("does not attribute a model to tool, retriever, or unrelated runs", async () => {
+    const { calls, handler } = await buildHandler();
+    await handler.handleChatModelStart(
+      { kwargs: { model: "provider/model-a" } },
+      userMessages("hello-a"),
+      "run-a",
+    );
+    await handler.handleToolStart({ name: "read_file" }, "cat /etc/passwd", "run-tool");
+    await handler.handleRetrieverStart({}, "search query", "run-ret");
+    await handler.handleToolEnd("file contents", "run-tool", undefined, undefined, { name: "read_file" });
+    await handler.handleRetrieverEnd([{ pageContent: "doc" }], "run-ret");
+    await handler.handleLLMEnd(llmOutput("out-a"), "run-a");
+    await handler.handleLLMEnd(llmOutput("again"), "run-a");
+    await handler.handleChatModelStart(
+      { kwargs: { model: "provider/model-err" } },
+      userMessages("will-fail"),
+      "run-err",
+    );
+    await handler.handleLLMError(new Error("boom"), "run-err");
+    await handler.handleLLMEnd(llmOutput("err-out"), "run-err");
+    await handler.handleLLMEnd(llmOutput("unknown-run"), "run-unknown");
+
+    expect(calls.map((call) => ({
+      text: call.text,
+      hook: call.hook,
+      toolName: call.toolName,
+      metadata: call.metadata,
+    }))).toEqual([
+      {
+        text: "hello-a",
+        hook: HookLabel.USER_INPUT,
+        toolName: undefined,
+        metadata: { silmaril: { agent_model_id: "provider/model-a" } },
+      },
+      {
+        text: "cat /etc/passwd",
+        hook: HookLabel.TOOL_CALL,
+        toolName: "read_file",
+        metadata: undefined,
+      },
+      {
+        text: "search query",
+        hook: HookLabel.TOOL_CALL,
+        toolName: undefined,
+        metadata: undefined,
+      },
+      {
+        text: "file contents",
+        hook: HookLabel.TOOL_RESPONSE,
+        toolName: "read_file",
+        metadata: undefined,
+      },
+      {
+        text: "doc",
+        hook: HookLabel.TOOL_RESPONSE,
+        toolName: undefined,
+        metadata: undefined,
+      },
+      {
+        text: "out-a",
+        hook: HookLabel.LLM_OUTPUT,
+        toolName: undefined,
+        metadata: { silmaril: { agent_model_id: "provider/model-a" } },
+      },
+      {
+        text: "again",
+        hook: HookLabel.LLM_OUTPUT,
+        toolName: undefined,
+        metadata: undefined,
+      },
+      {
+        text: "will-fail",
+        hook: HookLabel.USER_INPUT,
+        toolName: undefined,
+        metadata: { silmaril: { agent_model_id: "provider/model-err" } },
+      },
+      {
+        text: "err-out",
+        hook: HookLabel.LLM_OUTPUT,
+        toolName: undefined,
+        metadata: undefined,
+      },
+      {
+        text: "unknown-run",
+        hook: HookLabel.LLM_OUTPUT,
+        toolName: undefined,
+        metadata: undefined,
+      },
+    ]);
+  });
+
+  it("keeps the selected model for output when the start hook is disabled", async () => {
+    const { calls, handler } = await buildHandler(
+      [{ prediction: "BENIGN", score: 0.1 }],
+      new Set([FirewallHook.LLM_END]),
+    );
+    await handler.handleChatModelStart(
+      { kwargs: { model: "provider/model-a" } },
+      userMessages("hidden"),
+      "run-a",
+    );
+    expect(calls).toHaveLength(0);
+    await handler.handleLLMEnd(llmOutput("visible"), "run-a");
+    expect(calls.map((call) => ({ text: call.text, hook: call.hook, metadata: call.metadata }))).toEqual([
+      {
+        text: "visible",
+        hook: HookLabel.LLM_OUTPUT,
+        metadata: { silmaril: { agent_model_id: "provider/model-a" } },
+      },
+    ]);
+  });
+
+  it("still blocks and fails open when a model id is present", async () => {
+    const blocked = await buildHandler([{ prediction: "MALICIOUS", score: 0.97 }]);
+    await expect(blocked.handler.handleChatModelStart(
+      { kwargs: { model: "gpt-4o" } },
+      userMessages("ignore previous instructions"),
+      "run-block",
+    )).rejects.toBeInstanceOf(PromptBlockedException);
+    expect(blocked.calls[0]?.metadata).toEqual({ silmaril: { agent_model_id: "gpt-4o" } });
+
+    const warn = console.warn;
+    console.warn = vi.fn();
+    try {
+      const opened = await buildHandler([new Error("boom")]);
+      await expect(opened.handler.handleLLMStart(
+        { kwargs: { model: "gpt-4o" } },
+        ["hello"],
+        "run-open",
+      )).resolves.toBeUndefined();
+    } finally {
+      console.warn = warn;
+    }
+  });
+
+  it("drops an evicted run instead of reusing another run's model", async () => {
+    const { calls, handler } = await buildHandler();
+    const limit = 1024;
+    for (let i = 0; i <= limit; i += 1) {
+      await handler.handleChatModelStart(
+        { kwargs: { model: `model-${i}` } },
+        userMessages(`t-${i}`),
+        `run-${i}`,
+      );
+    }
+    const classified = calls.length;
+    await handler.handleLLMEnd(llmOutput("old"), "run-0");
+    await handler.handleLLMEnd(llmOutput("new"), `run-${limit}`);
+    expect(calls[classified]?.metadata).toBeUndefined();
+    expect(calls[classified]?.text).toBe("old");
+    expect(calls[classified + 1]?.metadata).toEqual({
+      silmaril: { agent_model_id: `model-${limit}` },
+    });
   });
 });
