@@ -341,9 +341,12 @@ resolveMcpToolResource({
 
 Exact server ids, explicit aliases, and the underscore spelling of each
 hyphenated server id are equal candidates. A catalog with `tools` matches only
-complete configured spellings, so one configured tool can select a shared
-server key. A server-only catalog uses the entire nonempty suffix as the tool
-id, including `__` or `:`. More than one parent or tool is `ambiguous`.
+complete configured spellings and ignores a tool whose parent is not a
+configured server, so one configured tool can select a shared server key. A
+server-only catalog uses the exact suffix as the tool id when that suffix
+contains a non-whitespace character, including `__` or `:`. A whitespace-only
+suffix stays unresolved and is not trimmed. More than one parent or tool is
+`ambiguous`.
 `classify()` still sends a caller-supplied `resource` unchanged, including
 when the raw tool name is ambiguous, and still sends the raw `toolName`.
 

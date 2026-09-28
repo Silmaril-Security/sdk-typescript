@@ -103,10 +103,11 @@ function mcpDispatchBody(
 }
 
 function toolIdAfterPrefix(body: string, prefix: string): string | undefined {
-  if (body.startsWith(prefix) && body.length > prefix.length) {
-    return body.slice(prefix.length);
+  if (!body.startsWith(prefix) || body.length <= prefix.length) {
+    return undefined;
   }
-  return undefined;
+  const toolId = body.slice(prefix.length);
+  return nonEmptyIdentity(toolId) ? toolId : undefined;
 }
 
 interface DispatchMatch {
@@ -243,9 +244,12 @@ function finishDispatchMatches(matches: readonly DispatchMatch[]): McpToolResour
 /**
  * Resolves a raw `mcp__` or `MCP:` dispatch name.
  * A string array is a server-only catalog. A catalog object with `tools`
- * matches complete configured spellings; without `tools`, every nonempty
- * suffix after a server key is the tool id. Exact ids, explicit aliases, and
- * hyphen-to-underscore server spellings are equal candidates.
+ * matches complete configured spellings and ignores a tool whose parent is
+ * not configured. Without `tools`, the exact suffix after a server key is
+ * the tool id when it contains a non-whitespace character, including `__`
+ * or `:`. A whitespace-only suffix stays unresolved and is not trimmed.
+ * Exact ids, explicit aliases, and hyphen-to-underscore server spellings
+ * are equal candidates.
  */
 export function resolveMcpToolResource(
   configuredServerIds: readonly string[],

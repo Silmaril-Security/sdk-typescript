@@ -11,8 +11,10 @@ All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 - Export `resolveMcpToolResource` for configured server ids or a typed catalog
   with server aliases and optional tools. Exact ids, explicit aliases, and
   hyphen-to-underscore server spellings are equal candidates. A tool catalog
-  matches complete spellings; a server-only catalog uses the entire nonempty
-  suffix as the tool id. Multiple candidates are ambiguous. An explicit
+  matches complete spellings and ignores a tool whose parent is not
+  configured. A server-only catalog uses the exact suffix as the tool id when
+  it contains a non-whitespace character, and leaves a whitespace-only suffix
+  unresolved. Multiple candidates are ambiguous. An explicit
   canonical resource passed to `classify()` is unchanged.
 - Pin and verify the vendored governance identity contract.
 

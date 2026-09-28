@@ -514,8 +514,35 @@ describe("resolveMcpToolResource", () => {
     mcp_dispatch_cases: readonly DispatchCase[];
   }>("matching.json").mcp_dispatch_cases;
 
+  it("rejects a whitespace-only suffix and keeps the exact remainder", () => {
+    expect(resolveMcpToolResource(["active"], "mcp__active__   ")).toEqual({
+      status: "unresolved",
+      reason: "unknown_server",
+    });
+    expect(resolveMcpToolResource(["active"], "MCP:active:   ")).toEqual({
+      status: "unresolved",
+      reason: "unknown_server",
+    });
+    expect(resolveMcpToolResource(["active"], "mcp__active__ search ")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: " search ", parentId: "active" },
+    });
+    expect(resolveMcpToolResource({
+      servers: [{ id: "git", aliases: ["active"] }],
+    }, "mcp__active__hub__search")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "hub__search", parentId: "git" },
+    });
+    expect(resolveMcpToolResource({
+      servers: [{ id: "git", aliases: ["active"] }],
+    }, "MCP:active:search:all")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "search:all", parentId: "git" },
+    });
+  });
+
   it("covers every final dispatch vector", () => {
-    expect(dispatchCases).toHaveLength(19);
+    expect(dispatchCases).toHaveLength(21);
   });
 
   it.each(dispatchCases.map((dispatchCase) => [dispatchCase.name, dispatchCase] as const))(
