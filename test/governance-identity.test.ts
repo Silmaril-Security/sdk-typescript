@@ -79,6 +79,25 @@ describe("governance identity contract", () => {
     expect(bodies.every((body) => body.identity_revision === "snapshot-7")).toBe(true);
   });
 
+  it("sends an explicit canonical resource unchanged when the raw name is ambiguous", async () => {
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_url, init) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return response({ prediction: "BENIGN", score: 0, threshold: 0.5 });
+    }) as typeof fetch;
+    const firewall = new Firewall({ apiKey: "test", apiUrl: API_URL });
+
+    await firewall.classify("search papers", {
+      toolName: "mcp__git_hub__search",
+      resource: { kind: "mcp_tool", id: "search", parentId: "git-hub" },
+    });
+
+    expect(body).toMatchObject({
+      tool_name: "mcp__git_hub__search",
+      resource: { kind: "mcp_tool", id: "search", parent_id: "git-hub" },
+    });
+  });
+
   it("serializes aligned nullable batch resources and one identity revision", async () => {
     let body: Record<string, unknown> | undefined;
     globalThis.fetch = (async (_url, init) => {
@@ -191,14 +210,25 @@ describe("governance identity contract", () => {
 });
 
 describe("resolveMcpToolResource", () => {
-  it("supports mcp__ and MCP: spellings with exact configured identity precedence", () => {
-    expect(resolveMcpToolResource(["git-hub", "git_hub"], "mcp__git_hub__search")).toEqual({
+  it("supports mcp__ and MCP: spellings when one canonical parent matches", () => {
+    expect(resolveMcpToolResource(["git_hub", "git_hub"], "mcp__git_hub__search")).toEqual({
       status: "resolved",
       resource: { kind: "mcp_tool", id: "search", parentId: "git_hub" },
     });
     expect(resolveMcpToolResource(["github"], "MCP:github:create_issue")).toEqual({
       status: "resolved",
       resource: { kind: "mcp_tool", id: "create_issue", parentId: "github" },
+    });
+  });
+
+  it("treats an exact spelling and a distinct host alias as ambiguous", () => {
+    expect(resolveMcpToolResource(["git-hub", "git_hub"], "mcp__git_hub__search")).toEqual({
+      status: "ambiguous",
+      serverIds: ["git-hub", "git_hub"],
+    });
+    expect(resolveMcpToolResource(["git-hub", "git_hub"], "MCP:git_hub:search")).toEqual({
+      status: "ambiguous",
+      serverIds: ["git-hub", "git_hub"],
     });
   });
 
@@ -305,7 +335,7 @@ describe("resolveMcpToolResource", () => {
     });
   });
 
-  it("reports overlapping exact prefixes as ambiguous before any alias", () => {
+  it("reports overlapping exact and alias prefixes as ambiguous", () => {
     expect(
       resolveMcpToolResource(["prod", "prod__west", "prod_west"], "mcp__prod__west__search"),
     ).toEqual({
@@ -319,8 +349,8 @@ describe("resolveMcpToolResource", () => {
       serverIds: ["prod", "prod:west"],
     });
     expect(resolveMcpToolResource(["prod_west", "prod-west"], "mcp__prod_west__search")).toEqual({
-      status: "resolved",
-      resource: { kind: "mcp_tool", id: "search", parentId: "prod_west" },
+      status: "ambiguous",
+      serverIds: ["prod-west", "prod_west"],
     });
     expect(
       resolveMcpToolResource(["foo-bar__baz", "foo_bar-_baz"], "mcp__foo_bar__baz__tool"),

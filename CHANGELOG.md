@@ -9,8 +9,10 @@ All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 - Parse canonical resource, identity revision, and identity-unresolved reason
   fields from governance decisions.
 - Export an MCP tool resource resolver that uses authoritative configured
-  server IDs, exact-match precedence, and explicit unresolved or ambiguous
-  results for supported `mcp__` and `MCP:` host spellings.
+  server IDs. A raw `mcp__` or `MCP:` dispatch resolves only when every exact
+  and hyphen-to-underscore reading names the same parent and tool; otherwise
+  the result is unresolved or ambiguous. An explicit canonical resource is
+  unchanged.
 - Pin and verify the vendored governance identity contract.
 
 Compatibility: deploy compatible Firewall readers before installing this SDK.

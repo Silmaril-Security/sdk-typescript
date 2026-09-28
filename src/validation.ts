@@ -100,22 +100,47 @@ function mcpDispatchBody(
   return undefined;
 }
 
-function matchingServerPrefixes(
+function toolIdAfterPrefix(body: string, prefix: string): string | undefined {
+  if (body.startsWith(prefix) && body.length > prefix.length) {
+    return body.slice(prefix.length);
+  }
+  return undefined;
+}
+
+/**
+ * Every configured ID can match as itself and, when it contains hyphens, as
+ * its host alias. Identical parent/tool pairs count once.
+ */
+function canonicalDispatchMatches(
   serverIds: readonly string[],
   body: string,
   delimiter: "__" | ":",
-  serverPrefix: (serverId: string) => string,
-): string[] {
-  const matches: string[] = [];
+): Array<{ readonly serverId: string; readonly toolId: string }> {
+  const matches: Array<{ readonly serverId: string; readonly toolId: string }> = [];
   const seen = new Set<string>();
   for (const serverId of serverIds) {
-    if (serverId.length === 0 || seen.has(serverId)) {
+    if (serverId.length === 0) {
       continue;
     }
-    seen.add(serverId);
-    const prefix = `${serverPrefix(serverId)}${delimiter}`;
-    if (body.startsWith(prefix) && body.length > prefix.length) {
-      matches.push(serverId);
+    const toolIds = new Set<string>();
+    const exactToolId = toolIdAfterPrefix(body, `${serverId}${delimiter}`);
+    if (exactToolId !== undefined) {
+      toolIds.add(exactToolId);
+    }
+    const alias = hostAlias(serverId);
+    if (alias !== serverId) {
+      const aliasToolId = toolIdAfterPrefix(body, `${alias}${delimiter}`);
+      if (aliasToolId !== undefined) {
+        toolIds.add(aliasToolId);
+      }
+    }
+    for (const toolId of toolIds) {
+      const canonical = `${serverId}\u0000${toolId}`;
+      if (seen.has(canonical)) {
+        continue;
+      }
+      seen.add(canonical);
+      matches.push({ serverId, toolId });
     }
   }
   return matches;
@@ -129,8 +154,8 @@ function resolvedMcpTool(serverId: string, toolId: string): McpToolResourceResol
 }
 
 /**
- * Resolves a host MCP dispatch name only against authoritative configured IDs.
- * Exact configured prefixes win before a unique hyphen-to-underscore alias.
+ * Resolves a raw host dispatch only when every exact and hyphen-to-underscore
+ * reading names the same configured parent and tool.
  */
 export function resolveMcpToolResource(
   configuredServerIds: readonly string[],
@@ -141,45 +166,20 @@ export function resolveMcpToolResource(
     return Object.freeze({ status: "unresolved", reason: "unrecognized_tool_name" });
   }
 
-  const uniqueServerIds = [...new Set(configuredServerIds)];
-  const exact = matchingServerPrefixes(
-    uniqueServerIds,
+  const matches = canonicalDispatchMatches(
+    [...new Set(configuredServerIds)],
     dispatch.body,
     dispatch.delimiter,
-    (serverId) => serverId,
   );
-  if (exact.length > 1) {
+  if (matches.length > 1) {
     return Object.freeze({
       status: "ambiguous",
-      serverIds: Object.freeze([...exact].sort()),
+      serverIds: Object.freeze([...new Set(matches.map((match) => match.serverId))].sort()),
     });
   }
-  if (exact.length === 1) {
-    const serverId = exact[0]!;
-    return resolvedMcpTool(
-      serverId,
-      dispatch.body.slice(serverId.length + dispatch.delimiter.length),
-    );
-  }
-
-  const aliases = matchingServerPrefixes(
-    uniqueServerIds,
-    dispatch.body,
-    dispatch.delimiter,
-    hostAlias,
-  );
-  if (aliases.length > 1) {
-    return Object.freeze({
-      status: "ambiguous",
-      serverIds: Object.freeze([...aliases].sort()),
-    });
-  }
-  if (aliases.length === 1) {
-    const serverId = aliases[0]!;
-    return resolvedMcpTool(
-      serverId,
-      dispatch.body.slice(hostAlias(serverId).length + dispatch.delimiter.length),
-    );
+  const match = matches[0];
+  if (match !== undefined) {
+    return resolvedMcpTool(match.serverId, match.toolId);
   }
   return Object.freeze({ status: "unresolved", reason: "unknown_server" });
 }
