@@ -128,6 +128,29 @@ function rememberMatch(
   matches.push({ serverId, toolId });
 }
 
+/** Later entries for one canonical id contribute aliases; they do not replace it. */
+function mergedServers(servers: readonly McpConfiguredServer[]): McpConfiguredServer[] {
+  const aliasesById = new Map<string, Set<string>>();
+  const order: string[] = [];
+  for (const server of servers) {
+    let aliases = aliasesById.get(server.id);
+    if (aliases === undefined) {
+      aliases = new Set<string>();
+      aliasesById.set(server.id, aliases);
+      order.push(server.id);
+    }
+    for (const alias of server.aliases ?? []) {
+      if (alias.length > 0) {
+        aliases.add(alias);
+      }
+    }
+  }
+  return order.map((id) => {
+    const aliases = [...(aliasesById.get(id) ?? [])];
+    return aliases.length === 0 ? { id } : { id, aliases };
+  });
+}
+
 /** Exact id, explicit aliases, and the hyphen-to-underscore spelling of the id. */
 function dispatchKeys(server: McpConfiguredServer): readonly string[] {
   const keys = new Set<string>();
@@ -151,7 +174,7 @@ function serverOnlyMatches(
 ): DispatchMatch[] {
   const matches: DispatchMatch[] = [];
   const seen = new Set<string>();
-  for (const server of servers) {
+  for (const server of mergedServers(servers)) {
     for (const key of dispatchKeys(server)) {
       const toolId = toolIdAfterPrefix(body, `${key}${delimiter}`);
       if (toolId === undefined) {
@@ -165,10 +188,8 @@ function serverOnlyMatches(
 
 function fullCatalogMatches(catalog: McpDispatchCatalog, toolName: string): DispatchMatch[] {
   const servers = new Map<string, McpConfiguredServer>();
-  for (const server of catalog.servers) {
-    if (!servers.has(server.id)) {
-      servers.set(server.id, server);
-    }
+  for (const server of mergedServers(catalog.servers)) {
+    servers.set(server.id, server);
   }
   const matches: DispatchMatch[] = [];
   const seen = new Set<string>();

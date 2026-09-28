@@ -380,6 +380,38 @@ describe("resolveMcpToolResource", () => {
     });
   });
 
+  it("merges aliases repeated for one server and still collides across servers", () => {
+    expect(resolveMcpToolResource({
+      servers: [
+        { id: "git", aliases: ["origin"] },
+        { id: "git", aliases: ["docs"] },
+      ],
+      tools: [{ id: "search", parentId: "git" }],
+    }, "mcp__docs__search")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "search", parentId: "git" },
+    });
+    expect(resolveMcpToolResource({
+      servers: [
+        { id: "git", aliases: ["shared"] },
+        { id: "hub", aliases: ["shared"] },
+      ],
+      tools: [
+        { id: "search", parentId: "git" },
+        { id: "search", parentId: "hub" },
+      ],
+    }, "mcp__shared__search")).toEqual({
+      status: "ambiguous",
+      serverIds: ["git", "hub"],
+    });
+    expect(resolveMcpToolResource({
+      servers: [{ id: "git" }],
+    }, "mcp__git__hub__search")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "hub__search", parentId: "git" },
+    });
+  });
+
   it("uses a configured server id that itself contains the dispatch separator", () => {
     expect(resolveMcpToolResource(["prod__west"], "mcp__prod__west__search")).toEqual({
       status: "resolved",
