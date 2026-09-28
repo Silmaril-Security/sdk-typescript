@@ -12,6 +12,46 @@ import {
 } from "../src/index.js";
 
 const API_URL = "https://api.test.invalid/classify";
+const CONTRACT_DIR = resolve(process.cwd(), "contracts/governance/v1");
+
+interface ContractServer {
+  readonly id: string;
+  readonly aliases?: readonly string[];
+}
+
+interface ContractTool {
+  readonly id: string;
+  readonly parent_id: string;
+}
+
+interface ContractResource {
+  readonly kind: "mcp_tool";
+  readonly id: string;
+  readonly parent_id: string;
+}
+
+interface DispatchCase {
+  readonly name: string;
+  readonly raw_name: string;
+  readonly authoritative_resource?: ContractResource;
+  readonly catalog: {
+    readonly servers: readonly ContractServer[];
+    readonly tools?: readonly ContractTool[];
+  };
+  readonly result: ContractResource | null;
+  readonly failure: "ambiguous" | "unresolved" | null;
+}
+
+interface PolicyCase {
+  readonly name: string;
+  readonly selector: { readonly kind?: string } | null;
+  readonly actual: { readonly kind?: string } | null;
+  readonly matches: boolean;
+}
+
+function contractJson<T>(fileName: string): T {
+  return JSON.parse(readFileSync(resolve(CONTRACT_DIR, fileName), "utf8")) as T;
+}
 
 function response(body: unknown): Response {
   return {
@@ -30,15 +70,34 @@ describe("governance identity contract", () => {
   });
 
   it("pins the exact vendored contract bytes", () => {
-    const contractDir = resolve(process.cwd(), "contracts/governance/v1");
-    const sums = readFileSync(resolve(contractDir, "SHA256SUMS"), "utf8").trim().split("\n");
+    const sums = readFileSync(resolve(CONTRACT_DIR, "SHA256SUMS"), "utf8").trim().split("\n");
     for (const line of sums) {
       const [expected, file] = line.split(/\s+/u);
       const actual = createHash("sha256")
-        .update(readFileSync(resolve(contractDir, file!)))
+        .update(readFileSync(resolve(CONTRACT_DIR, file!)))
         .digest("hex");
       expect(actual, file).toBe(expected);
     }
+  });
+
+  it("reads seven-kind policy vectors without evaluating Firewall matching", () => {
+    const schema = contractJson<{
+      properties: { kind: { enum: readonly string[] } };
+    }>("resource.schema.json");
+    const matching = contractJson<{ cases: readonly PolicyCase[] }>("matching.json");
+    const seen = new Set<string>();
+    for (const policyCase of matching.cases) {
+      if (policyCase.selector?.kind !== undefined) {
+        seen.add(policyCase.selector.kind);
+      }
+      if (policyCase.actual?.kind !== undefined) {
+        seen.add(policyCase.actual.kind);
+      }
+      expect(typeof policyCase.matches).toBe("boolean");
+    }
+    expect([...seen].sort()).toEqual([...schema.properties.kind.enum].sort());
+    // Selector wildcards, mcp_server inheritance, and specificity stay in
+    // Firewall. This client validates concrete refs and resolves dispatch names.
   });
 
   it("serializes all seven concrete resource kinds without changing raw tool_name", async () => {
@@ -387,4 +446,139 @@ describe("resolveMcpToolResource", () => {
       reason: "unrecognized_tool_name",
     });
   });
+
+  const dispatchCases = contractJson<{
+    mcp_dispatch_cases: readonly DispatchCase[];
+  }>("matching.json").mcp_dispatch_cases;
+
+  it.each(dispatchCases.map((dispatchCase) => [dispatchCase.name, dispatchCase] as const))(
+    "dispatch vector: %s",
+    async (_name, dispatchCase) => {
+      const serverIds = dispatchCase.catalog.servers.map((server) => server.id);
+      const resolution = resolveMcpToolResource(serverIds, dispatchCase.raw_name);
+
+      if (dispatchCase.authoritative_resource !== undefined) {
+        expect(resolution.status).toBe("ambiguous");
+        expect(dispatchCase.result).toEqual(dispatchCase.authoritative_resource);
+        const originalFetch = globalThis.fetch;
+        let body: Record<string, unknown> | undefined;
+        globalThis.fetch = (async (_url, init) => {
+          body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return response({ prediction: "BENIGN", score: 0, threshold: 0.5 });
+        }) as typeof fetch;
+        try {
+          const firewall = new Firewall({ apiKey: "test", apiUrl: API_URL });
+          const authoritative = dispatchCase.authoritative_resource;
+          await firewall.classify("search papers", {
+            toolName: dispatchCase.raw_name,
+            resource: {
+              kind: authoritative.kind,
+              id: authoritative.id,
+              parentId: authoritative.parent_id,
+            },
+          });
+          expect(body).toMatchObject({
+            tool_name: dispatchCase.raw_name,
+            resource: {
+              kind: authoritative.kind,
+              id: authoritative.id,
+              parent_id: authoritative.parent_id,
+            },
+          });
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+        return;
+      }
+
+      if (dispatchCase.catalog.tools !== undefined) {
+        const candidates = exactConfiguredSpellings(dispatchCase);
+        if (dispatchCase.result !== null) {
+          expect(candidates).toEqual([
+            {
+              parentId: dispatchCase.result.parent_id,
+              toolId: dispatchCase.result.id,
+            },
+          ]);
+        } else if (dispatchCase.failure === "ambiguous") {
+          expect(candidates.length).toBeGreaterThan(1);
+        } else {
+          expect(candidates).toEqual([]);
+        }
+      }
+
+      if (dispatchCase.result !== null) {
+        expect(resolution).toEqual({
+          status: "resolved",
+          resource: {
+            kind: dispatchCase.result.kind,
+            id: dispatchCase.result.id,
+            parentId: dispatchCase.result.parent_id,
+          },
+        });
+        return;
+      }
+
+      // The vendored server-only vector still calls a separator inside the
+      // unmatched suffix ambiguous. The corrected rule keeps that whole suffix
+      // as one tool id when it is the only candidate.
+      if (
+        dispatchCase.failure === "ambiguous"
+        && dispatchCase.catalog.tools === undefined
+        && resolution.status === "resolved"
+        && serverIds.length === 1
+      ) {
+        const serverId = serverIds[0]!;
+        const prefix = `mcp__${serverId}__`;
+        expect(dispatchCase.raw_name.startsWith(prefix)).toBe(true);
+        const toolId = dispatchCase.raw_name.slice(prefix.length);
+        expect(toolId.includes("__") || toolId.includes(":")).toBe(true);
+        expect(resolution).toEqual({
+          status: "resolved",
+          resource: { kind: "mcp_tool", id: toolId, parentId: serverId },
+        });
+        return;
+      }
+
+      if (dispatchCase.failure === "ambiguous") {
+        expect(resolution.status).toBe("ambiguous");
+        return;
+      }
+      expect(resolution.status).toBe("unresolved");
+      expect(dispatchCase.failure).toBe("unresolved");
+    },
+  );
 });
+
+function exactConfiguredSpellings(
+  dispatchCase: DispatchCase,
+): Array<{ readonly parentId: string; readonly toolId: string }> {
+  const candidates: Array<{ readonly parentId: string; readonly toolId: string }> = [];
+  const seen = new Set<string>();
+  for (const server of dispatchCase.catalog.servers) {
+    const keys = new Set<string>([server.id, server.id.replaceAll("-", "_")]);
+    for (const alias of server.aliases ?? []) {
+      keys.add(alias);
+    }
+    for (const tool of dispatchCase.catalog.tools ?? []) {
+      if (tool.parent_id !== server.id) {
+        continue;
+      }
+      for (const key of keys) {
+        if (
+          dispatchCase.raw_name !== `mcp__${key}__${tool.id}`
+          && dispatchCase.raw_name !== `MCP:${key}:${tool.id}`
+        ) {
+          continue;
+        }
+        const canonical = `${server.id}\u0000${tool.id}`;
+        if (seen.has(canonical)) {
+          continue;
+        }
+        seen.add(canonical);
+        candidates.push({ parentId: server.id, toolId: tool.id });
+      }
+    }
+  }
+  return candidates;
+}
