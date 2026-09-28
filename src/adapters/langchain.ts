@@ -24,8 +24,6 @@ import {
 
 const USER_ROLES: ReadonlySet<string> = new Set(["human", "user"]);
 
-/** In-flight chat/LLM runs whose output may still need the selected model. */
-const AGENT_MODEL_RUN_LIMIT = 1024;
 const AGENT_MODEL_ID_MAX_CHARS = 256;
 
 const MODEL_ID_KEYS = ["model", "model_id", "modelId", "model_name", "modelName"] as const;
@@ -164,6 +162,13 @@ export async function createLangChainHandler(
     }
   };
 
+  // Selected model for each chat/LLM run that has started and has not ended
+  // or failed. Entries are removed only by handleLLMEnd, handleLLMError, or a
+  // later start for the same run id. A concurrency cap is not applied: the
+  // oldest entry can still be an active run, and dropping it would omit an
+  // already observed model id from that run's output. A start that never
+  // receives end or error cannot be told apart from a slow active run, so
+  // those entries stay until this handler is released.
   const runModelIds = new Map<string, string>();
 
   const rememberRunModel = (runId: string, modelId: string | undefined): void => {
@@ -172,13 +177,6 @@ export async function createLangChainHandler(
       return;
     }
     runModelIds.set(runId, modelId);
-    while (runModelIds.size > AGENT_MODEL_RUN_LIMIT) {
-      const oldest = runModelIds.keys().next().value;
-      if (oldest === undefined) {
-        break;
-      }
-      runModelIds.delete(oldest);
-    }
   };
 
   const takeRunModel = (runId: string): string | undefined => {

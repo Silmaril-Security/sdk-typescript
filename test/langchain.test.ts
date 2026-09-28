@@ -869,10 +869,10 @@ describe("LangChain adapter — agent model id", () => {
     }
   });
 
-  it("drops an evicted run instead of reusing another run's model", async () => {
+  it("keeps every active run's model id across more than 1024 concurrent starts", async () => {
     const { calls, handler } = await buildHandler();
-    const limit = 1024;
-    for (let i = 0; i <= limit; i += 1) {
+    const count = 1025;
+    for (let i = 0; i < count; i += 1) {
       await handler.handleChatModelStart(
         { kwargs: { model: `model-${i}` } },
         userMessages(`t-${i}`),
@@ -880,12 +880,17 @@ describe("LangChain adapter — agent model id", () => {
       );
     }
     const classified = calls.length;
-    await handler.handleLLMEnd(llmOutput("old"), "run-0");
-    await handler.handleLLMEnd(llmOutput("new"), `run-${limit}`);
-    expect(calls[classified]?.metadata).toBeUndefined();
-    expect(calls[classified]?.text).toBe("old");
-    expect(calls[classified + 1]?.metadata).toEqual({
-      silmaril: { agent_model_id: `model-${limit}` },
-    });
+    await handler.handleLLMError(new Error("boom"), "run-1");
+    await handler.handleLLMEnd(llmOutput("oldest"), "run-0");
+    await handler.handleLLMEnd(llmOutput("errored"), "run-1");
+    await handler.handleLLMEnd(llmOutput("newest"), `run-${count - 1}`);
+    await handler.handleLLMEnd(llmOutput("oldest-again"), "run-0");
+
+    expect(calls.slice(classified).map((call) => ({ text: call.text, metadata: call.metadata }))).toEqual([
+      { text: "oldest", metadata: { silmaril: { agent_model_id: "model-0" } } },
+      { text: "errored", metadata: undefined },
+      { text: "newest", metadata: { silmaril: { agent_model_id: `model-${count - 1}` } } },
+      { text: "oldest-again", metadata: undefined },
+    ]);
   });
 });
