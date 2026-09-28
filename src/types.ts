@@ -16,21 +16,41 @@ export type GovernanceResourceKind =
   | "skill"
   | "extension";
 
+/** Legacy governance selector shape retained for GovernanceContext compatibility. */
 export interface GovernanceResource {
   readonly kind: GovernanceResourceKind;
   readonly id?: string;
   readonly parentId?: string;
 }
 
+/** A concrete runtime resource reference; wildcard identities are not permitted. */
+export type ConcreteGovernanceResource =
+  | {
+      readonly kind: "mcp_tool";
+      readonly id: string;
+      readonly parentId: string;
+    }
+  | {
+      readonly kind: Exclude<GovernanceResourceKind, "mcp_tool">;
+      readonly id: string;
+      readonly parentId?: never;
+    };
+
 export interface GovernanceContext {
   readonly agent?: string;
+  /** @deprecated Pass resource directly in ClassifyOptions.resource. */
   readonly resource?: GovernanceResource;
 }
+
+export type GovernanceReason = "identity_unresolved";
 
 export interface GovernanceDecision {
   readonly action: GovernanceAction;
   readonly ruleId?: string;
   readonly policyVersion: string;
+  readonly resource?: ConcreteGovernanceResource;
+  readonly identityRevision?: string;
+  readonly reason?: GovernanceReason;
 }
 
 export interface BlockResult {
@@ -61,6 +81,8 @@ export interface ClassifyOptions {
   mode?: FirewallMode;
   hook?: HookLabel;
   toolName?: string;
+  resource?: ConcreteGovernanceResource;
+  identityRevision?: string;
   governance?: GovernanceContext;
   metadata?: ClassificationMetadata;
   requestId?: string;
@@ -75,6 +97,8 @@ export interface ClassifyBatchOptions {
   mode?: FirewallMode;
   hooks?: readonly HookLabel[];
   toolNames?: readonly (string | undefined)[];
+  resources?: readonly (ConcreteGovernanceResource | null | undefined)[];
+  identityRevision?: string;
   governance?: readonly (GovernanceContext | undefined)[];
   metadata?: readonly (ClassificationMetadata | undefined)[];
   requestId?: string;
@@ -132,3 +156,36 @@ export interface MiddlewareOptions {
   onBlocked?: (err: Error) => void;
   onClassify?: (event: ClassifyEvent) => void;
 }
+
+export interface McpConfiguredServer {
+  readonly id: string;
+  readonly aliases?: readonly string[];
+}
+
+export interface McpConfiguredTool {
+  readonly id: string;
+  readonly parentId: string;
+}
+
+/** Configured MCP dispatch catalog. Omit `tools` for a server-only catalog. */
+export interface McpDispatchCatalog {
+  readonly servers: readonly McpConfiguredServer[];
+  readonly tools?: readonly McpConfiguredTool[];
+}
+
+export type McpToolResourceResolution =
+  | {
+      readonly status: "resolved";
+      readonly resource: ConcreteGovernanceResource & {
+        readonly kind: "mcp_tool";
+        readonly parentId: string;
+      };
+    }
+  | {
+      readonly status: "unresolved";
+      readonly reason: "unrecognized_tool_name" | "unknown_server";
+    }
+  | {
+      readonly status: "ambiguous";
+      readonly serverIds: readonly string[];
+    };

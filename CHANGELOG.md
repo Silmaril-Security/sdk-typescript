@@ -2,6 +2,28 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.7.0 - 2026-09-26
+
+- Add validated canonical governance resources and identity revisions to single
+  and aligned batch classification requests while preserving raw tool names.
+- Parse canonical resource, identity revision, and identity-unresolved reason
+  fields from governance decisions.
+- Export `resolveMcpToolResource` for configured server ids or a typed catalog
+  with server aliases and optional tools. Exact ids, explicit aliases, and
+  hyphen-to-underscore server spellings are equal candidates. A tool catalog
+  matches complete spellings and ignores a tool whose parent is not
+  configured. A server-only catalog uses the exact suffix as the tool id when
+  it contains a non-whitespace character, and leaves a whitespace-only suffix
+  unresolved. Multiple candidates are ambiguous. An explicit
+  canonical resource passed to `classify()` is unchanged.
+- Pin and verify the vendored governance identity contract.
+
+Compatibility: deploy compatible Firewall readers before installing this SDK.
+Upgrade plugins and the separately bundled macOS adapters after the SDK is
+published. Keep existing policies on their current schema until every
+enforcement consumer in the target scope is verified against contract 1.0.0;
+then explicitly activate runtime schema 6.
+
 ## 0.6.3 - 2026-09-24
 
 - Add an optional `signal` option to `classify()` and `classifyBatch()`.
