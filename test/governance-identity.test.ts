@@ -289,4 +289,72 @@ describe("resolveMcpToolResource", () => {
       resource: { kind: "mcp_tool", id: "search", parentId: "git\nhub" },
     });
   });
+
+  it("uses a configured server id that itself contains the dispatch separator", () => {
+    expect(resolveMcpToolResource(["prod__west"], "mcp__prod__west__search")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "search", parentId: "prod__west" },
+    });
+    expect(resolveMcpToolResource(["prod:west"], "MCP:prod:west:search")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "search", parentId: "prod:west" },
+    });
+    expect(resolveMcpToolResource(["prod"], "mcp__prod__west__search")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "west__search", parentId: "prod" },
+    });
+  });
+
+  it("reports overlapping exact prefixes as ambiguous before any alias", () => {
+    expect(
+      resolveMcpToolResource(["prod", "prod__west", "prod_west"], "mcp__prod__west__search"),
+    ).toEqual({
+      status: "ambiguous",
+      serverIds: ["prod", "prod__west"],
+    });
+    expect(
+      resolveMcpToolResource(["prod", "prod:west", "prod-west"], "MCP:prod:west:search"),
+    ).toEqual({
+      status: "ambiguous",
+      serverIds: ["prod", "prod:west"],
+    });
+    expect(resolveMcpToolResource(["prod_west", "prod-west"], "mcp__prod_west__search")).toEqual({
+      status: "resolved",
+      resource: { kind: "mcp_tool", id: "search", parentId: "prod_west" },
+    });
+    expect(
+      resolveMcpToolResource(["foo-bar__baz", "foo_bar-_baz"], "mcp__foo_bar__baz__tool"),
+    ).toEqual({
+      status: "ambiguous",
+      serverIds: ["foo-bar__baz", "foo_bar-_baz"],
+    });
+  });
+
+  it("keeps long separator-bearing names unresolved when no configured prefix fits", () => {
+    const repeated = "prod__west__".repeat(5_000);
+    expect(resolveMcpToolResource(["github"], `mcp__${repeated}search`)).toEqual({
+      status: "unresolved",
+      reason: "unknown_server",
+    });
+    expect(resolveMcpToolResource(["prod__west"], `mcp__prod__west__search${repeated}`)).toEqual({
+      status: "resolved",
+      resource: {
+        kind: "mcp_tool",
+        id: `search${repeated}`,
+        parentId: "prod__west",
+      },
+    });
+    expect(resolveMcpToolResource(["prod__west"], "mcp__prod__west__")).toEqual({
+      status: "unresolved",
+      reason: "unknown_server",
+    });
+    expect(resolveMcpToolResource(["prod:west"], "MCP:prod:west:")).toEqual({
+      status: "unresolved",
+      reason: "unknown_server",
+    });
+    expect(resolveMcpToolResource(["prod__west"], "mcp__\nprod__west__search")).toEqual({
+      status: "unresolved",
+      reason: "unrecognized_tool_name",
+    });
+  });
 });
