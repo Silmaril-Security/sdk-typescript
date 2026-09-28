@@ -163,8 +163,8 @@ export async function createLangChainHandler(
   };
 
   // Selected model for each chat/LLM run that has started and has not ended
-  // or failed. Entries are removed only by handleLLMEnd, handleLLMError, or a
-  // later start for the same run id. A concurrency cap is not applied: the
+  // or failed. Entries are removed by handleLLMEnd, handleLLMError, a
+  // rejected start, or a later start for the same run id. A concurrency cap is not applied: the
   // oldest entry can still be an active run, and dropping it would omit an
   // already observed model id from that run's output. A start that never
   // receives end or error cannot be told apart from a slow active run, so
@@ -240,6 +240,20 @@ export async function createLangChainHandler(
     });
   };
 
+  const classifyModelStart = async (
+    text: string,
+    hookLabel: HookLabel,
+    runId: string,
+    agentModelId: string | undefined,
+  ): Promise<void> => {
+    try {
+      await classify(text, hookLabel, runId, undefined, agentModelId);
+    } catch (err) {
+      runModelIds.delete(runId);
+      throw err;
+    }
+  };
+
   class SilmarilFirewallHandler extends BaseCallbackHandler {
     override name = "silmaril_firewall_handler";
     override raiseError = true;
@@ -275,11 +289,10 @@ export async function createLangChainHandler(
       if (!text) {
         return;
       }
-      await classify(
+      await classifyModelStart(
         text,
         FIREWALL_HOOK_TO_LABEL[FirewallHook.CHAT_MODEL_START],
         runId,
-        undefined,
         agentModelId,
       );
     }
@@ -303,11 +316,10 @@ export async function createLangChainHandler(
       if (!text) {
         return;
       }
-      await classify(
+      await classifyModelStart(
         text,
         FIREWALL_HOOK_TO_LABEL[FirewallHook.LLM_START],
         runId,
-        undefined,
         agentModelId,
       );
     }
