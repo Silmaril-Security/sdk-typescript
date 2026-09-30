@@ -1,0 +1,89 @@
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { describe, expect, it, vi } from "vitest";
+
+import { Firewall, HookLabel } from "../src/index.js";
+import {
+  SAFE_FINAL_MESSAGE, SAFE_OUTPUT_MESSAGE, SAFE_TOOL_MESSAGE,
+  createDeepAgentsMiddleware, createProtectedDeepAgent,
+} from "../src/adapters/deepagents.js";
+
+function firewallWithDecisions() {
+  const firewall = new Firewall({ apiKey: "sk", apiUrl: "https://example.com/classify" });
+  const calls: Array<{ text: string; hook?: string; metadata?: unknown }> = [];
+  firewall.classify = vi.fn(async (text, options) => {
+    calls.push({ text, hook: options?.hook, metadata: options?.metadata });
+    return {
+      prediction: text.includes("deny") ? "MALICIOUS" : "BENIGN",
+      score: text.includes("deny") ? 0.9 : 0.1,
+      threshold: 0.5,
+      mode: "block",
+    };
+  }) as typeof firewall.classify;
+  return { firewall, calls };
+}
+
+describe("Deep Agents middleware", () => {
+  it("blocks a tool call before execution and preserves its ID", async () => {
+    const { firewall, calls } = firewallWithDecisions();
+    const middleware = createDeepAgentsMiddleware(firewall, { conversationId: "conversation-1" });
+    const handler = vi.fn(async () => new ToolMessage({ content: "safe", tool_call_id: "call-1" }));
+    const request = {
+      toolCall: { id: "call-1", name: "search", args: { query: "deny" } },
+      state: { messages: [] }, runtime: {},
+    };
+    const result = await middleware.wrapToolCall!(request as never, handler as never);
+    expect(handler).not.toHaveBeenCalled();
+    expect(ToolMessage.isInstance(result) && result.content).toBe(SAFE_TOOL_MESSAGE);
+    expect(ToolMessage.isInstance(result) && result.tool_call_id).toBe("call-1");
+    expect(calls[0]).toMatchObject({ hook: HookLabel.TOOL_CALL, metadata: { conversationId: "conversation-1" } });
+  });
+
+  it("replaces a denied tool result and allows an alternative", async () => {
+    const { firewall } = firewallWithDecisions();
+    const middleware = createDeepAgentsMiddleware(firewall);
+    const request = { toolCall: { id: "call-1", name: "search", args: { query: "safe" } }, state: { messages: [] }, runtime: {} };
+    const denied = await middleware.wrapToolCall!(request as never, async () => new ToolMessage({ content: "deny result", tool_call_id: "call-1" }));
+    expect(ToolMessage.isInstance(denied) && denied.content).toBe(SAFE_TOOL_MESSAGE);
+    const allowed = await middleware.wrapToolCall!(request as never, async () => new ToolMessage({ content: "allowed", tool_call_id: "call-1" }));
+    expect(ToolMessage.isInstance(allowed) && allowed.content).toBe("allowed");
+  });
+
+  it("protects input and output and caps repeated denials", async () => {
+    const { firewall } = firewallWithDecisions();
+    const middleware = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
+    const handler = vi.fn(async () => new AIMessage("allowed"));
+    const input = { messages: [new HumanMessage("deny input")], state: { messages: [] }, runtime: {} };
+    const denied = await middleware.wrapModelCall!(input as never, handler as never);
+    expect(AIMessage.isInstance(denied) && denied.content).toBe(SAFE_OUTPUT_MESSAGE);
+    expect(handler).not.toHaveBeenCalled();
+    const output = { messages: [new ToolMessage({ content: "safe", tool_call_id: "call-1" })], state: { messages: [] }, runtime: {} };
+    const blockedOutput = await middleware.wrapModelCall!(output as never, async () => new AIMessage("deny output"));
+    expect(AIMessage.isInstance(blockedOutput) && blockedOutput.content).toBe(SAFE_OUTPUT_MESSAGE);
+    const capped = { ...output, state: { messages: [
+      new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-1" }),
+      new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-2" }),
+    ] } };
+    const terminal = await middleware.wrapModelCall!(capped as never, handler as never);
+    expect(AIMessage.isInstance(terminal) && terminal.content).toBe(SAFE_FINAL_MESSAGE);
+  });
+
+  it("requires protection inside a compiled subagent", () => {
+    const { firewall } = firewallWithDecisions();
+    expect(() => createProtectedDeepAgent(firewall, { subagents: [
+      { name: "compiled", description: "compiled", runnable: {} as never },
+    ] })).toThrow(/Compiled or remote subagents/);
+  });
+
+  it("reports Warn decisions without replacing model content", async () => {
+    const { firewall } = firewallWithDecisions();
+    const events: string[] = [];
+    const middleware = createDeepAgentsMiddleware(firewall, {
+      mode: "warn",
+      onClassify: (event) => events.push(event.mode),
+    });
+    const request = { messages: [new HumanMessage("deny input")], state: { messages: [] }, runtime: {} };
+    const output = await middleware.wrapModelCall!(request as never, async () => new AIMessage("deny output"));
+    expect(AIMessage.isInstance(output) && output.content).toBe("deny output");
+    expect(events).toEqual(["warn", "warn"]);
+  });
+});

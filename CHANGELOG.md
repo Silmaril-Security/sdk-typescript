@@ -2,6 +2,17 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.7.0 - 2026-09-30
+
+- Add optional Deep Agents middleware and protected constructors for root, general-purpose,
+  declarative, and explicitly protected compiled subagents. The compiled graph factory
+  records middleware installation and constructors reject unverified graphs.
+- Enforce input, tool-call, tool-result, and non-streamed model-output decisions in
+  Block mode with safe continuation and a repeated-denial cap. Shadow and Warn report
+  decisions without changing content.
+- Enable LangChain tool start/end callbacks by default and send the LangChain run ID
+  as correlation metadata alongside a distinct classification request ID per event.
+
 ## 0.6.3 - 2026-09-24
 
 - Add an optional `signal` option to `classify()` and `classifyBatch()`.

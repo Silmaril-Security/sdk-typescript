@@ -113,6 +113,10 @@ export async function createLangChainHandler(
     try {
       result = await firewall.classify(text, {
         hook: hookLabel,
+        metadata: {
+          langgraph: { run_id: runId },
+          ...(options.conversationId === undefined ? {} : { conversationId: options.conversationId }),
+        },
         ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
         ...(toolName !== undefined ? { toolName } : {}),
       });
