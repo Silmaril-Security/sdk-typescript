@@ -1,6 +1,8 @@
 // Copyright (c) 2024-2026 Silmaril Security Inc. All rights reserved.
 
 /** Optional Deep Agents integration. Import from @silmaril-security/sdk/adapters/deepagents. */
+import { randomUUID } from "node:crypto";
+
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { Command } from "@langchain/langgraph";
 import { createDeepAgent, GENERAL_PURPOSE_SUBAGENT, type AnySubAgent, type CompiledSubAgent } from "deepagents";
@@ -45,6 +47,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
     throw new Error("maxBlockedAttempts must be a positive integer");
   }
   const effectiveMode = options.mode ?? firewall.mode;
+  const blockedMarker = randomUUID();
   const classify = async (text: string, hook: HookLabel, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined }> => {
     if (!text.trim()) return { enforce: false, mode: effectiveMode };
     try {
@@ -82,17 +85,16 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         }
       }
       const blockedCount = history.slice(lastUserIndex + 1).filter(
-        (message) => ToolMessage.isInstance(message) && message.content === SAFE_TOOL_MESSAGE,
+        (message) => ToolMessage.isInstance(message) && message.additional_kwargs?.silmarilBlocked === blockedMarker,
       ).length;
       const latestUser = [...request.messages].reverse().find(HumanMessage.isInstance);
       const inputDecision = latestUser
         ? await classify(textOf(latestUser), HookLabel.USER_INPUT)
         : undefined;
       if (inputDecision?.enforce) return new AIMessage(SAFE_OUTPUT_MESSAGE);
-      // Safe tool messages are emitted only for Block decisions. Do not
-      // reclassify their fixed text to decide whether to cap the original denials.
-      const capMode = inputDecision?.mode ?? effectiveMode ?? "block";
-      if (blockedCount >= maxBlockedAttempts && capMode === "block") {
+      // The marker is added only after a Block decision, so neither an
+      // unrelated input mode nor tool output that quotes the safe text affects the cap.
+      if (blockedCount >= maxBlockedAttempts) {
         return new AIMessage(SAFE_FINAL_MESSAGE);
       }
       const response = await handler(request);
@@ -109,6 +111,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         content: SAFE_TOOL_MESSAGE,
         tool_call_id: request.toolCall.id ?? "",
         name: request.toolCall.name,
+        additional_kwargs: { silmarilBlocked: blockedMarker },
       });
       if ((await classify(JSON.stringify(request.toolCall.args ?? {}), HookLabel.TOOL_CALL, request.toolCall.name)).enforce) {
         return safe();

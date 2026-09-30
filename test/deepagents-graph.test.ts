@@ -6,7 +6,7 @@ import { z } from "zod";
 
 import { Firewall } from "../src/index.js";
 import {
-  SAFE_OUTPUT_MESSAGE, SAFE_TOOL_MESSAGE,
+  SAFE_FINAL_MESSAGE, SAFE_OUTPUT_MESSAGE, SAFE_TOOL_MESSAGE,
   createProtectedCompiledSubagent, createProtectedDeepAgent,
 } from "../src/adapters/deepagents.js";
 
@@ -38,6 +38,23 @@ describe("protected Deep Agents graph", () => {
     expect(called).toEqual(["safe"]);
     expect(output.messages.filter(ToolMessage.isInstance).map((message: ToolMessage) => [message.tool_call_id, message.content]))
       .toEqual([["call-1", SAFE_TOOL_MESSAGE], ["call-2", "safe result"]]);
+  });
+
+  it("ends the current turn after repeated denied tool calls", async () => {
+    const firewall = makeFirewall();
+    const called: string[] = [];
+    const search = tool(async ({ query }) => {
+      called.push(query);
+      return "safe result";
+    }, { name: "search", description: "Search", schema: z.object({ query: z.string() }) });
+    const model = fakeModel()
+      .respondWithTools([{ name: "search", args: { query: "deny first" }, id: "call-1" }])
+      .respondWithTools([{ name: "search", args: { query: "deny second" }, id: "call-2" }])
+      .respond(new AIMessage("unreachable"));
+    const agent = createProtectedDeepAgent(firewall, { model, tools: [search], silmaril: { maxBlockedAttempts: 2 } });
+    const output = await agent.invoke({ messages: [new HumanMessage("hello")] });
+    expect(called).toEqual([]);
+    expect(output.messages.at(-1)?.content).toBe(SAFE_FINAL_MESSAGE);
   });
 
   it.each(["general-purpose", "research", "compiled"])("protects %s subagent output", async (name) => {
