@@ -126,6 +126,20 @@ describe("Deep Agents middleware", () => {
     expect(classify).toHaveBeenCalledOnce();
   });
 
+  it("keeps the denial cap after graph message and middleware reconstruction", async () => {
+    const { firewall } = firewallWithDecisions();
+    const first = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
+    const original = [await deniedToolMessage(first, "call-1"), await deniedToolMessage(first, "call-2")];
+    const restored = original.map((message) => new ToolMessage({
+      content: message.content, tool_call_id: message.tool_call_id, additional_kwargs: { ...message.additional_kwargs },
+    }));
+    const resumed = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
+    const handler = vi.fn(async () => new AIMessage("unreachable"));
+    const response = await resumed.wrapModelCall!({ messages: restored, state: { messages: restored }, runtime: {} } as never, handler as never);
+    expect(AIMessage.isInstance(response) && response.content).toBe(SAFE_FINAL_MESSAGE);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it("does not count allowed tool text that matches the safe replacement", async () => {
     const { firewall } = firewallWithDecisions();
     const middleware = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });

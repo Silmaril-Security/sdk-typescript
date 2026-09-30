@@ -1,8 +1,6 @@
 // Copyright (c) 2024-2026 Silmaril Security Inc. All rights reserved.
 
 /** Optional Deep Agents integration. Import from @silmaril-security/sdk/adapters/deepagents. */
-import { randomUUID } from "node:crypto";
-
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { Command } from "@langchain/langgraph";
 import { createDeepAgent, GENERAL_PURPOSE_SUBAGENT, type AnySubAgent, type CompiledSubAgent } from "deepagents";
@@ -15,6 +13,7 @@ import type { ClassifyEvent, FirewallMode } from "../types.js";
 export const SAFE_TOOL_MESSAGE = "Silmaril Firewall blocked this tool interaction. Choose a different safe action.";
 export const SAFE_FINAL_MESSAGE = "Silmaril Firewall stopped this request after repeated unsafe actions.";
 export const SAFE_OUTPUT_MESSAGE = "Silmaril Firewall blocked this response.";
+const BLOCKED_TOOL_MARKER = "silmaril-firewall:v1:blocked-tool";
 
 // A protected graph is identified by the exact runnable returned by our factory.
 const protectedCompiledGraphs = new WeakMap<object, Firewall>();
@@ -47,7 +46,6 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
     throw new Error("maxBlockedAttempts must be a positive integer");
   }
   const effectiveMode = options.mode ?? firewall.mode;
-  const blockedMarker = randomUUID();
   const classify = async (text: string, hook: HookLabel, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined }> => {
     if (!text.trim()) return { enforce: false, mode: effectiveMode };
     try {
@@ -85,7 +83,8 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         }
       }
       const blockedCount = history.slice(lastUserIndex + 1).filter(
-        (message) => ToolMessage.isInstance(message) && message.additional_kwargs?.silmarilBlocked === blockedMarker,
+        (message) => ToolMessage.isInstance(message) && message.content === SAFE_TOOL_MESSAGE
+          && message.additional_kwargs?.silmarilBlocked === BLOCKED_TOOL_MARKER,
       ).length;
       const latestUser = [...request.messages].reverse().find(HumanMessage.isInstance);
       const inputDecision = latestUser
@@ -111,7 +110,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         content: SAFE_TOOL_MESSAGE,
         tool_call_id: request.toolCall.id ?? "",
         name: request.toolCall.name,
-        additional_kwargs: { silmarilBlocked: blockedMarker },
+        additional_kwargs: { silmarilBlocked: BLOCKED_TOOL_MARKER },
       });
       if ((await classify(JSON.stringify(request.toolCall.args ?? {}), HookLabel.TOOL_CALL, request.toolCall.name)).enforce) {
         return safe();
