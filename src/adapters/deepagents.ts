@@ -14,6 +14,7 @@ export const SAFE_TOOL_MESSAGE = "Silmaril Firewall blocked this tool interactio
 export const SAFE_FINAL_MESSAGE = "Silmaril Firewall stopped this request after repeated unsafe actions.";
 export const SAFE_OUTPUT_MESSAGE = "Silmaril Firewall blocked this response.";
 const BLOCKED_TOOL_MARKER = "silmaril-firewall:v1:blocked-tool";
+const issuedBlockedMessages = new WeakSet<ToolMessage>();
 
 // A protected graph is identified by the exact runnable returned by our factory.
 const protectedCompiledGraphs = new WeakMap<object, Firewall>();
@@ -41,17 +42,22 @@ function textOfStructuredValue(value: unknown, seen = new WeakSet<object>()): st
 }
 
 function stripAllowedMarker(result: ToolMessage | Command): ToolMessage | Command {
-  const strip = (message: ToolMessage): void => {
-    if (message.additional_kwargs?.silmarilBlocked === BLOCKED_TOOL_MARKER) {
-      delete message.additional_kwargs.silmarilBlocked;
-    }
+  const strip = (message: ToolMessage): ToolMessage => {
+    if (message.additional_kwargs?.silmarilBlocked !== BLOCKED_TOOL_MARKER) return message;
+    if (issuedBlockedMessages.has(message)) return message;
+    const { silmarilBlocked: _marker, ...additional_kwargs } = message.additional_kwargs;
+    // Tool providers may return frozen messages or metadata. Copy rather
+    // than mutating a result owned by the caller.
+    return new ToolMessage({ ...message, additional_kwargs });
   };
-  if (ToolMessage.isInstance(result)) strip(result);
-  else if (result instanceof Command) {
+  if (ToolMessage.isInstance(result)) return strip(result);
+  if (result instanceof Command) {
     const update = result.update;
     if (update && !Array.isArray(update) && "messages" in update && Array.isArray(update.messages)) {
-      for (const message of update.messages) {
-        if (ToolMessage.isInstance(message)) strip(message);
+      const originalMessages = update.messages;
+      const messages = originalMessages.map((message) => ToolMessage.isInstance(message) ? strip(message) : message);
+      if (messages.some((message, index) => message !== originalMessages[index])) {
+        return new Command({ ...result, update: { ...update, messages } });
       }
     }
   }
@@ -124,12 +130,16 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
       return response;
     },
     wrapToolCall: async (request, handler) => {
-      const safe = () => new ToolMessage({
-        content: SAFE_TOOL_MESSAGE,
-        tool_call_id: request.toolCall.id ?? "",
-        name: request.toolCall.name,
-        additional_kwargs: { silmarilBlocked: BLOCKED_TOOL_MARKER },
-      });
+      const safe = () => {
+        const message = new ToolMessage({
+          content: SAFE_TOOL_MESSAGE,
+          tool_call_id: request.toolCall.id ?? "",
+          name: request.toolCall.name,
+          additional_kwargs: { silmarilBlocked: BLOCKED_TOOL_MARKER },
+        });
+        issuedBlockedMessages.add(message);
+        return message;
+      };
       if ((await classify(JSON.stringify(request.toolCall.args ?? {}), HookLabel.TOOL_CALL, request.toolCall.name)).enforce) {
         return safe();
       }
