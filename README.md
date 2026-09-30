@@ -358,6 +358,9 @@ the typed governance option is supplied; it replaces any caller-provided
 preserved as the backend sequence identity. No aliases are inspected. If
 callers provide `metadata.silmaril`, it must be an object and SDK-reserved keys
 are overwritten by the SDK.
+Set `metadata.silmaril.agent_model_id` to the agent's selected model ID when
+known. For `classifyBatch`, provide one metadata object per text so model IDs
+can differ within the same request.
 
 The `governance` option on `classify()` and per-item `governance` array on
 `classifyBatch()` send typed agent/resource context. `BlockResult.governance`

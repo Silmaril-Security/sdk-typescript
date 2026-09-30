@@ -37,6 +37,7 @@ interface VercelGenerateResult {
 interface WrapGenerateArgs<TResult extends VercelGenerateResult & Record<string, unknown>> {
   params: { prompt?: ReadonlyArray<VercelPromptMessage> } & Record<string, unknown>;
   doGenerate: () => PromiseLike<TResult>;
+  model?: { modelId?: string };
 }
 
 interface WrapStreamArgs<
@@ -44,6 +45,7 @@ interface WrapStreamArgs<
 > {
   params: { prompt?: ReadonlyArray<VercelPromptMessage> } & Record<string, unknown>;
   doStream: () => PromiseLike<TResult>;
+  model?: { modelId?: string };
 }
 
 interface StreamPart {
@@ -55,6 +57,17 @@ interface StreamPart {
 interface VercelStepContext {
   toolName: string | undefined;
   toolCallId: string | undefined;
+  agentModelId?: string | undefined;
+}
+
+function selectedModelId(model: { modelId?: string } | undefined): string | undefined {
+  const id = model?.modelId;
+  if (typeof id !== "string") return undefined;
+  const trimmed = id.trim();
+  return trimmed && trimmed.length <= 256 &&
+    !Array.from(trimmed).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+    ? trimmed
+    : undefined;
 }
 
 function stringifyToolValue(value: unknown): string {
@@ -180,6 +193,7 @@ export function createMiddleware(
         hook,
         ...(toolName !== undefined ? { toolName } : {}),
         ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
+        ...(context.agentModelId ? { metadata: { silmaril: { agent_model_id: context.agentModelId } } } : {}),
       },
     );
     const threshold = result.threshold;
@@ -215,7 +229,7 @@ export function createMiddleware(
     throw err;
   };
 
-  const scanPrompt = async (prompt: ReadonlyArray<VercelPromptMessage>): Promise<void> => {
+  const scanPrompt = async (prompt: ReadonlyArray<VercelPromptMessage>, agentModelId?: string): Promise<void> => {
     if (prompt.length === 0) {
       return;
     }
@@ -228,7 +242,7 @@ export function createMiddleware(
     // toolName is read directly from the Vercel content part.
     if (role === "tool") {
       for (const { text, toolName, toolCallId } of iterateToolResultParts(last)) {
-        await classifyOrBlock(text, HookLabel.TOOL_RESPONSE, { toolName, toolCallId });
+        await classifyOrBlock(text, HookLabel.TOOL_RESPONSE, { toolName, toolCallId, agentModelId });
       }
       return;
     }
@@ -243,12 +257,12 @@ export function createMiddleware(
     if (!text) {
       return;
     }
-    await classifyOrBlock(text, HookLabel.USER_INPUT);
+    await classifyOrBlock(text, HookLabel.USER_INPUT, { toolName: undefined, toolCallId: undefined, agentModelId });
   };
 
-  const scanGenerateResult = async (result: VercelGenerateResult): Promise<void> => {
+  const scanGenerateResult = async (result: VercelGenerateResult, agentModelId?: string): Promise<void> => {
     if (scanOutput && typeof result.text === "string" && result.text.length > 0) {
-      await classifyOrBlock(result.text, HookLabel.LLM_OUTPUT);
+      await classifyOrBlock(result.text, HookLabel.LLM_OUTPUT, { toolName: undefined, toolCallId: undefined, agentModelId });
     }
     if (options.scanToolCalls && Array.isArray(result.toolCalls)) {
       for (const call of result.toolCalls) {
@@ -261,7 +275,7 @@ export function createMiddleware(
         const toolName = typeof call.toolName === "string" ? call.toolName : undefined;
         const toolCallId = typeof call.toolCallId === "string" ? call.toolCallId : undefined;
         if (args.trim()) {
-          await classifyOrBlock(args, HookLabel.TOOL_CALL, { toolName, toolCallId });
+          await classifyOrBlock(args, HookLabel.TOOL_CALL, { toolName, toolCallId, agentModelId });
         }
       }
     }
@@ -274,21 +288,25 @@ export function createMiddleware(
     async wrapGenerate<TResult extends VercelGenerateResult & Record<string, unknown>>({
       params,
       doGenerate,
+      model,
     }: WrapGenerateArgs<TResult>): Promise<TResult> {
+      const agentModelId = selectedModelId(model);
       if (scanInput) {
-        await scanPrompt(params.prompt ?? []);
+        await scanPrompt(params.prompt ?? [], agentModelId);
       }
       const result = await doGenerate();
-      await scanGenerateResult(result);
+      await scanGenerateResult(result, agentModelId);
       return result;
     },
 
     async wrapStream<TResult extends { stream: ReadableStream<unknown> } & Record<string, unknown>>({
       params,
       doStream,
+      model,
     }: WrapStreamArgs<TResult>): Promise<TResult> {
+      const agentModelId = selectedModelId(model);
       if (scanInput) {
-        await scanPrompt(params.prompt ?? []);
+        await scanPrompt(params.prompt ?? [], agentModelId);
       }
       const { stream, ...rest } = await doStream();
       if (!scanOutput) {
@@ -311,7 +329,7 @@ export function createMiddleware(
               return;
             }
             try {
-              await classifyOrBlock(buffered, HookLabel.LLM_OUTPUT);
+              await classifyOrBlock(buffered, HookLabel.LLM_OUTPUT, { toolName: undefined, toolCallId: undefined, agentModelId });
             } catch (err) {
               if (err instanceof FirewallBlockedException) {
                 controller.enqueue({ type: "error", error: err });

@@ -2,6 +2,9 @@
 // PROPRIETARY AND CONFIDENTIAL
 
 import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
+import type { Serialized } from "@langchain/core/load/serializable";
+import type { BaseMessage } from "@langchain/core/messages";
+import type { LLMResult } from "@langchain/core/outputs";
 
 import type { Firewall } from "../firewall.js";
 import { FirewallBlockedException } from "../exceptions.js";
@@ -20,6 +23,62 @@ import {
 } from "../utils/extract.js";
 
 const USER_ROLES: ReadonlySet<string> = new Set(["human", "user"]);
+
+const AGENT_MODEL_ID_MAX_CHARS = 256;
+
+const MODEL_ID_KEYS = ["model", "model_id", "modelId", "model_name", "modelName"] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function modelIdString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= AGENT_MODEL_ID_MAX_CHARS &&
+    !Array.from(trimmed).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+    ? trimmed
+    : undefined;
+}
+
+function modelIdFromFields(fields: Record<string, unknown> | undefined): string | undefined {
+  if (fields === undefined) {
+    return undefined;
+  }
+  for (const key of MODEL_ID_KEYS) {
+    const modelId = modelIdString(fields[key]);
+    if (modelId !== undefined) {
+      return modelId;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Selected model for this callback. Invocation params are the call about to
+ * run, `ls_model_name` is LangChain's explicit model metadata, and serialized
+ * kwargs hold the constructor model. `serialized.id` is the class path and is
+ * never used as a model id.
+ */
+function selectedAgentModelId(
+  llm: unknown,
+  extraParams: Record<string, unknown> | undefined,
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  const invocationParams = extraParams?.invocation_params;
+  const fromInvocation = modelIdFromFields(isRecord(invocationParams) ? invocationParams : undefined);
+  if (fromInvocation !== undefined) {
+    return fromInvocation;
+  }
+  const fromMetadata = modelIdString(metadata?.ls_model_name);
+  if (fromMetadata !== undefined) {
+    return fromMetadata;
+  }
+  const kwargs = isRecord(llm) ? llm.kwargs : undefined;
+  return modelIdFromFields(isRecord(kwargs) ? kwargs : undefined);
+}
 
 interface LangChainDucktypedMessage {
   role?: string;
@@ -102,11 +161,35 @@ export async function createLangChainHandler(
     }
   };
 
+  // Selected model for each chat/LLM run that has started and has not ended
+  // or failed. Entries are removed by handleLLMEnd, handleLLMError, a
+  // rejected start, or a later start for the same run id. A concurrency cap is not applied: the
+  // oldest entry can still be an active run, and dropping it would omit an
+  // already observed model id from that run's output. A start that never
+  // receives end or error cannot be told apart from a slow active run, so
+  // those entries stay until this handler is released.
+  const runModelIds = new Map<string, string>();
+
+  const rememberRunModel = (runId: string, modelId: string | undefined): void => {
+    runModelIds.delete(runId);
+    if (modelId === undefined) {
+      return;
+    }
+    runModelIds.set(runId, modelId);
+  };
+
+  const takeRunModel = (runId: string): string | undefined => {
+    const modelId = runModelIds.get(runId);
+    runModelIds.delete(runId);
+    return modelId;
+  };
+
   const classify = async (
     text: string,
     hookLabel: HookLabel,
     runId: string,
     toolName?: string,
+    agentModelId?: string,
   ): Promise<void> => {
     let result: BlockResult;
     try {
@@ -118,6 +201,9 @@ export async function createLangChainHandler(
         },
         ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
         ...(toolName !== undefined ? { toolName } : {}),
+        ...(agentModelId !== undefined
+          ? { metadata: { silmaril: { agent_model_id: agentModelId } } }
+          : {}),
       });
     } catch (err) {
       if (!failOpen) {
@@ -157,16 +243,37 @@ export async function createLangChainHandler(
     });
   };
 
+  const classifyModelStart = async (
+    text: string,
+    hookLabel: HookLabel,
+    runId: string,
+    agentModelId: string | undefined,
+  ): Promise<void> => {
+    try {
+      await classify(text, hookLabel, runId, undefined, agentModelId);
+    } catch (err) {
+      runModelIds.delete(runId);
+      throw err;
+    }
+  };
+
   class SilmarilFirewallHandler extends BaseCallbackHandler {
     override name = "silmaril_firewall_handler";
     override raiseError = true;
     override awaitHandlers = true;
 
     override async handleChatModelStart(
-      _llm: unknown,
-      messages: unknown,
+      llm: Serialized,
+      messages: BaseMessage[][],
       runId: string,
+      _parentRunId?: string,
+      extraParams?: Record<string, unknown>,
+      _tags?: string[],
+      metadata?: Record<string, unknown>,
+      _runName?: string,
     ): Promise<void> {
+      const agentModelId = selectedAgentModelId(llm, extraParams, metadata);
+      rememberRunModel(runId, agentModelId);
       if (!enabledHooks.has(FirewallHook.CHAT_MODEL_START)) {
         return;
       }
@@ -185,14 +292,26 @@ export async function createLangChainHandler(
       if (!text) {
         return;
       }
-      await classify(text, FIREWALL_HOOK_TO_LABEL[FirewallHook.CHAT_MODEL_START], runId);
+      await classifyModelStart(
+        text,
+        FIREWALL_HOOK_TO_LABEL[FirewallHook.CHAT_MODEL_START],
+        runId,
+        agentModelId,
+      );
     }
 
     override async handleLLMStart(
-      _llm: unknown,
+      llm: Serialized,
       prompts: string[],
       runId: string,
+      _parentRunId?: string,
+      extraParams?: Record<string, unknown>,
+      _tags?: string[],
+      metadata?: Record<string, unknown>,
+      _runName?: string,
     ): Promise<void> {
+      const agentModelId = selectedAgentModelId(llm, extraParams, metadata);
+      rememberRunModel(runId, agentModelId);
       if (!enabledHooks.has(FirewallHook.LLM_START)) {
         return;
       }
@@ -200,7 +319,12 @@ export async function createLangChainHandler(
       if (!text) {
         return;
       }
-      await classify(text, FIREWALL_HOOK_TO_LABEL[FirewallHook.LLM_START], runId);
+      await classifyModelStart(
+        text,
+        FIREWALL_HOOK_TO_LABEL[FirewallHook.LLM_START],
+        runId,
+        agentModelId,
+      );
     }
 
     override async handleToolStart(
@@ -234,15 +358,38 @@ export async function createLangChainHandler(
       await classify(text, FIREWALL_HOOK_TO_LABEL[FirewallHook.RETRIEVER_START], runId);
     }
 
-    override async handleLLMEnd(output: unknown, runId: string): Promise<void> {
+    override async handleLLMEnd(
+      output: LLMResult,
+      runId: string,
+      _parentRunId?: string,
+      _tags?: string[],
+      _extraParams?: Record<string, unknown>,
+    ): Promise<void> {
+      const agentModelId = takeRunModel(runId);
       if (!enabledHooks.has(FirewallHook.LLM_END)) {
         return;
       }
-      const text = extractTextFromLLMResult(output as { generations?: ReadonlyArray<ReadonlyArray<{ text?: string }>> });
+      const text = extractTextFromLLMResult(output);
       if (!text) {
         return;
       }
-      await classify(text, FIREWALL_HOOK_TO_LABEL[FirewallHook.LLM_END], runId);
+      await classify(
+        text,
+        FIREWALL_HOOK_TO_LABEL[FirewallHook.LLM_END],
+        runId,
+        undefined,
+        agentModelId,
+      );
+    }
+
+    override async handleLLMError(
+      _err: unknown,
+      runId: string,
+      _parentRunId?: string,
+      _tags?: string[],
+      _extraParams?: Record<string, unknown>,
+    ): Promise<void> {
+      rememberRunModel(runId, undefined);
     }
 
     override async handleToolEnd(

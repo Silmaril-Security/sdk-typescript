@@ -8,6 +8,8 @@ interface ClassifyCall {
   text: string;
   hook: HookLabel | undefined;
   toolName: string | undefined;
+  agentModelId?: unknown;
+  metadata?: unknown;
 }
 
 function makeFirewall(
@@ -20,7 +22,13 @@ function makeFirewall(
   });
   let i = 0;
   firewall.classify = vi.fn(async (text, options) => {
-    calls.push({ text, hook: options?.hook, toolName: options?.toolName });
+    calls.push({
+      text,
+      hook: options?.hook,
+      toolName: options?.toolName,
+      agentModelId: (options?.metadata?.silmaril as Record<string, unknown> | undefined)?.agent_model_id,
+      ...(options?.metadata !== undefined ? { metadata: options.metadata } : {}),
+    });
     const r = scores[Math.min(i, scores.length - 1)];
     i++;
     return Object.freeze({
@@ -34,6 +42,26 @@ function makeFirewall(
 }
 
 describe("Vercel middleware — wrapGenerate", () => {
+  it("uses the selected AI SDK model for each call", async () => {
+    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const middleware = createMiddleware(firewall, { scanOutput: true });
+    for (const modelId of ["provider/model-a", "provider/model-b"]) {
+      await middleware.wrapGenerate({
+        model: { modelId },
+        params: { prompt: [{ role: "user", content: "Hello" }] },
+        doGenerate: async () => ({ text: "response" }),
+      });
+    }
+    expect(calls.map((call) => call.agentModelId)).toEqual([
+      "provider/model-a", "provider/model-a", "provider/model-b", "provider/model-b",
+    ]);
+    await middleware.wrapGenerate({
+      params: { prompt: [{ role: "user", content: "Unknown" }] },
+      doGenerate: async () => ({ text: "response" }),
+    });
+    expect(calls.slice(-2).map((call) => call.agentModelId)).toEqual([undefined, undefined]);
+  });
+
   it("classifies the prompt before calling doGenerate (benign passes)", async () => {
     const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
     const middleware = createMiddleware(firewall);
@@ -489,6 +517,157 @@ describe("Vercel middleware — wrapStream", () => {
       }),
     ).rejects.toBeInstanceOf(PromptBlockedException);
     expect(doStream).not.toHaveBeenCalled();
+  });
+});
+
+describe("Vercel middleware — agent model id on stream and tools", () => {
+  async function readStream(stream: ReadableStream<unknown>): Promise<void> {
+    const reader = stream.getReader();
+    for (;;) {
+      const { done } = await reader.read();
+      if (done) {
+        return;
+      }
+    }
+  }
+
+  function textStream(text: string): ReadableStream<unknown> {
+    return new ReadableStream({
+      start(controller): void {
+        controller.enqueue({ type: "text-delta", textDelta: text });
+        controller.close();
+      },
+    });
+  }
+
+  function toolResultPrompt(text: string): Array<{
+    role: string;
+    content: Array<{ type: string; toolCallId: string; toolName: string; result: string }>;
+  }> {
+    return [{
+      role: "tool",
+      content: [{ type: "tool-result", toolCallId: "tc1", toolName: "readFile", result: text }],
+    }];
+  }
+
+  function modelMetadata(modelId: string): { silmaril: { agent_model_id: string } } {
+    return { silmaril: { agent_model_id: modelId } };
+  }
+
+  it("uses the selected model for wrapStream input and output, then drops it when the next call has none", async () => {
+    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const middleware = createMiddleware(firewall, { scanOutput: true });
+    for (const modelId of ["provider/model-a", "provider/model-b"]) {
+      const result = await middleware.wrapStream({
+        model: { modelId },
+        params: { prompt: [{ role: "user", content: "Hello" }] },
+        doStream: async () => ({ stream: textStream(`out-${modelId}`) }),
+      });
+      await readStream(result.stream);
+    }
+    const missing = await middleware.wrapStream({
+      params: { prompt: [{ role: "user", content: "Unknown" }] },
+      doStream: async () => ({ stream: textStream("out-unknown") }),
+    });
+    await readStream(missing.stream);
+
+    expect(calls.map((call) => ({
+      hook: call.hook,
+      agentModelId: call.agentModelId,
+      metadata: call.metadata,
+    }))).toEqual([
+      { hook: HookLabel.USER_INPUT, agentModelId: "provider/model-a", metadata: modelMetadata("provider/model-a") },
+      { hook: HookLabel.LLM_OUTPUT, agentModelId: "provider/model-a", metadata: modelMetadata("provider/model-a") },
+      { hook: HookLabel.USER_INPUT, agentModelId: "provider/model-b", metadata: modelMetadata("provider/model-b") },
+      { hook: HookLabel.LLM_OUTPUT, agentModelId: "provider/model-b", metadata: modelMetadata("provider/model-b") },
+      { hook: HookLabel.USER_INPUT, agentModelId: undefined, metadata: undefined },
+      { hook: HookLabel.LLM_OUTPUT, agentModelId: undefined, metadata: undefined },
+    ]);
+  });
+
+  it("uses the selected model for tool-result classifications on generate and stream", async () => {
+    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const middleware = createMiddleware(firewall);
+    await middleware.wrapGenerate({
+      model: { modelId: "provider/model-a" },
+      params: { prompt: toolResultPrompt("from-generate") },
+      doGenerate: async () => ({ text: "" }),
+    });
+    const streamed = await middleware.wrapStream({
+      model: { modelId: "provider/model-b" },
+      params: { prompt: toolResultPrompt("from-stream") },
+      doStream: async () => ({ stream: textStream("ignored without scanOutput") }),
+    });
+    await readStream(streamed.stream);
+    await middleware.wrapGenerate({
+      params: { prompt: toolResultPrompt("from-missing") },
+      doGenerate: async () => ({ text: "" }),
+    });
+
+    expect(calls.map((call) => ({
+      text: call.text,
+      hook: call.hook,
+      toolName: call.toolName,
+      agentModelId: call.agentModelId,
+      metadata: call.metadata,
+    }))).toEqual([
+      {
+        text: "from-generate",
+        hook: HookLabel.TOOL_RESPONSE,
+        toolName: "readFile",
+        agentModelId: "provider/model-a",
+        metadata: modelMetadata("provider/model-a"),
+      },
+      {
+        text: "from-stream",
+        hook: HookLabel.TOOL_RESPONSE,
+        toolName: "readFile",
+        agentModelId: "provider/model-b",
+        metadata: modelMetadata("provider/model-b"),
+      },
+      {
+        text: "from-missing",
+        hook: HookLabel.TOOL_RESPONSE,
+        toolName: "readFile",
+        agentModelId: undefined,
+        metadata: undefined,
+      },
+    ]);
+  });
+
+  it("uses the selected model for tool-call classifications and does not reuse a prior call", async () => {
+    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const middleware = createMiddleware(firewall, { scanToolCalls: true });
+    const models = ["provider/model-a", "provider/model-b", undefined] as const;
+    for (const modelId of models) {
+      await middleware.wrapGenerate({
+        ...(modelId === undefined ? {} : { model: { modelId } }),
+        params: { prompt: [{ role: "user", content: `call-${modelId ?? "missing"}` }] },
+        doGenerate: async () => ({
+          text: "",
+          toolCalls: [{
+            toolCallType: "function",
+            toolCallId: "tc1",
+            toolName: "readFile",
+            args: `{"path":"${modelId ?? "missing"}"}`,
+          }],
+        }),
+      });
+    }
+
+    expect(calls.map((call) => ({
+      hook: call.hook,
+      toolName: call.toolName,
+      agentModelId: call.agentModelId,
+      metadata: call.metadata,
+    }))).toEqual([
+      { hook: HookLabel.USER_INPUT, toolName: undefined, agentModelId: "provider/model-a", metadata: modelMetadata("provider/model-a") },
+      { hook: HookLabel.TOOL_CALL, toolName: "readFile", agentModelId: "provider/model-a", metadata: modelMetadata("provider/model-a") },
+      { hook: HookLabel.USER_INPUT, toolName: undefined, agentModelId: "provider/model-b", metadata: modelMetadata("provider/model-b") },
+      { hook: HookLabel.TOOL_CALL, toolName: "readFile", agentModelId: "provider/model-b", metadata: modelMetadata("provider/model-b") },
+      { hook: HookLabel.USER_INPUT, toolName: undefined, agentModelId: undefined, metadata: undefined },
+      { hook: HookLabel.TOOL_CALL, toolName: "readFile", agentModelId: undefined, metadata: undefined },
+    ]);
   });
 });
 

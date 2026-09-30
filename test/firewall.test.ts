@@ -765,6 +765,27 @@ describe("Firewall.classifyBatch", () => {
     });
   });
 
+  it("keeps each caller-supplied agent model ID on its batch item", async () => {
+    const { calls } = mockFetch([{ status: 200, body: {
+      predictions: [{ prediction: "BENIGN", score: 0 }, { prediction: "BENIGN", score: 0 }],
+    } }]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    await fw.classifyBatch(["a", "b"], {
+      requestId: "model-batch",
+      metadata: [
+        { silmaril: { agent_model_id: "provider/model-a" } },
+        { silmaril: { agent_model_id: "provider/model-b" } },
+      ],
+    });
+    expect(calls[0]!.body).toEqual({
+      texts: ["a", "b"],
+      metadata: [
+        { silmaril: { ...silmarilMetadata("model-batch", 0), agent_model_id: "provider/model-a" } },
+        { silmaril: { ...silmarilMetadata("model-batch", 1), agent_model_id: "provider/model-b" } },
+      ],
+    });
+  });
+
   it("does not send thresholds for batch requests", async () => {
     const { calls } = mockFetch([
       {
