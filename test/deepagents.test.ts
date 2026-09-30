@@ -64,13 +64,26 @@ describe("Deep Agents middleware", () => {
   it.each(["warn", "shadow"] as const)("does not cap prior denials in backend %s mode", async (mode) => {
     const { firewall } = firewallWithDecisions();
     firewall.classify = vi.fn(async () => ({ prediction: "MALICIOUS", score: 0.9, threshold: 0.5, mode })) as typeof firewall.classify;
-    const middleware = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
+    const middleware = createDeepAgentsMiddleware(firewall, { mode, maxBlockedAttempts: 2 });
     const handler = vi.fn(async () => new AIMessage("original output"));
     const previous = new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-1" });
     const request = { messages: [previous], state: { messages: [previous, new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-2" })] }, runtime: {} };
     const response = await middleware.wrapModelCall!(request as never, handler as never);
     expect(handler).toHaveBeenCalledOnce();
     expect(AIMessage.isInstance(response) && response.content).toBe("original output");
+  });
+
+  it("classifies cyclic and BigInt Command updates without aborting tool handling", async () => {
+    const { firewall, calls } = firewallWithDecisions();
+    const middleware = createDeepAgentsMiddleware(firewall);
+    const request = { toolCall: { id: "call-1", name: "search", args: { query: "safe" } }, state: { messages: [] }, runtime: {} };
+    const update: { messages: ToolMessage[]; count: bigint; self?: unknown } = {
+      messages: [new ToolMessage({ content: "deny result", tool_call_id: "call-1" })], count: 1n,
+    };
+    update.self = update;
+    const result = await middleware.wrapToolCall!(request as never, async () => new Command({ update }));
+    expect(calls.some((call) => call.hook === HookLabel.TOOL_RESPONSE && call.text.includes("deny result"))).toBe(true);
+    expect(ToolMessage.isInstance(result) && result.content).toBe(SAFE_TOOL_MESSAGE);
   });
 
   it("protects input and output and caps repeated denials", async () => {
@@ -90,6 +103,24 @@ describe("Deep Agents middleware", () => {
     ] } };
     const terminal = await middleware.wrapModelCall!(capped as never, handler as never);
     expect(AIMessage.isInstance(terminal) && terminal.content).toBe(SAFE_FINAL_MESSAGE);
+  });
+
+  it("caps blocked tool decisions without reclassifying their safe replacement text", async () => {
+    const { firewall, calls } = firewallWithDecisions();
+    firewall.classify = vi.fn(async (text, options) => {
+      calls.push({ text, hook: options?.hook });
+      return { prediction: "BENIGN", score: 0.1, threshold: 0.5, mode: options?.hook === HookLabel.TOOL_RESPONSE ? "warn" : "block" };
+    }) as typeof firewall.classify;
+    const middleware = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
+    const messages = [
+      new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-1" }),
+      new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-2" }),
+    ];
+    const handler = vi.fn(async () => new AIMessage("allowed"));
+    const response = await middleware.wrapModelCall!({ messages, state: { messages }, runtime: {} } as never, handler as never);
+    expect(AIMessage.isInstance(response) && response.content).toBe(SAFE_FINAL_MESSAGE);
+    expect(handler).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
   });
 
   it("checks the latest user before model use even when tools follow it", async () => {

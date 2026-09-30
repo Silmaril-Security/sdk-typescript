@@ -30,6 +30,15 @@ function textOf(message: { content: unknown }): string {
   return typeof message.content === "string" ? message.content : JSON.stringify(message.content);
 }
 
+function textOfStructuredValue(value: unknown, seen = new WeakSet<object>()): string {
+  if (value == null) return "";
+  if (typeof value !== "object") return String(value);
+  if (seen.has(value)) return "[circular]";
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => textOfStructuredValue(item, seen)).join("\n");
+  return Object.entries(value).map(([key, item]) => `${key}: ${textOfStructuredValue(item, seen)}`).join("\n");
+}
+
 export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgentsMiddlewareOptions = {}) {
   const maxBlockedAttempts = options.maxBlockedAttempts ?? 3;
   if (!Number.isInteger(maxBlockedAttempts) || maxBlockedAttempts < 1) {
@@ -75,24 +84,19 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
       const blockedCount = history.slice(lastUserIndex + 1).filter(
         (message) => ToolMessage.isInstance(message) && message.content === SAFE_TOOL_MESSAGE,
       ).length;
-      const last = request.messages.at(-1);
       const latestUser = [...request.messages].reverse().find(HumanMessage.isInstance);
       const inputDecision = latestUser
         ? await classify(textOf(latestUser), HookLabel.USER_INPUT)
         : undefined;
       if (inputDecision?.enforce) return new AIMessage(SAFE_OUTPUT_MESSAGE);
-      if (blockedCount >= maxBlockedAttempts) {
-        let mode = inputDecision?.mode ?? effectiveMode;
-        if (mode === undefined) {
-          const latest = last ?? request.state.messages.at(-1);
-          if (latest && ToolMessage.isInstance(latest)) {
-            mode = (await classify(textOf(latest), HookLabel.TOOL_RESPONSE, latest.name)).mode;
-          }
-        }
-        if (mode === "block") return new AIMessage(SAFE_FINAL_MESSAGE);
+      // Safe tool messages are emitted only for Block decisions. Do not
+      // reclassify their fixed text to decide whether to cap the original denials.
+      const capMode = inputDecision?.mode ?? effectiveMode ?? "block";
+      if (blockedCount >= maxBlockedAttempts && capMode === "block") {
+        return new AIMessage(SAFE_FINAL_MESSAGE);
       }
       const response = await handler(request);
-      if (response instanceof Command && (await classify(JSON.stringify(response.update), HookLabel.LLM_OUTPUT)).enforce) {
+      if (response instanceof Command && (await classify(textOfStructuredValue(response.update), HookLabel.LLM_OUTPUT)).enforce) {
         return new AIMessage(SAFE_OUTPUT_MESSAGE);
       }
       if (AIMessage.isInstance(response) && (await classify(textOf(response), HookLabel.LLM_OUTPUT)).enforce) {
@@ -110,8 +114,14 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         return safe();
       }
       const result = await handler(request);
-      const resultText = ToolMessage.isInstance(result) ? textOf(result)
-        : result instanceof Command ? JSON.stringify(result.update) : String(result);
+      let resultText: string;
+      try {
+        resultText = ToolMessage.isInstance(result) ? textOf(result)
+          : result instanceof Command ? textOfStructuredValue(result.update) : String(result);
+      } catch {
+        // An uninspectable result must not enter graph state in Block mode.
+        return safe();
+      }
       if ((await classify(resultText, HookLabel.TOOL_RESPONSE, request.toolCall.name)).enforce) {
         return safe();
       }
