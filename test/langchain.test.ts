@@ -18,6 +18,16 @@ it("default tool hooks pass the run ID as correlation metadata", async () => {
   expect(calls.every((call) => JSON.stringify(call.metadata) === JSON.stringify({ langgraph: { run_id: "run-1" }, conversationId: "conversation-1" }))).toBe(true);
 });
 
+it("includeTool false skips default tool hooks", async () => {
+  const firewall = new Firewall({ apiKey: "sk", apiUrl: "https://example.com/classify" });
+  const classify = vi.fn(async () => ({ prediction: "MALICIOUS", score: 0.9, threshold: 0.5, mode: "block" }));
+  firewall.classify = classify as typeof firewall.classify;
+  const handler = await createLangChainHandler(firewall, { includeTool: false });
+  await handler.handleToolStart?.({ name: "search" } as never, "deny call", "run-1");
+  await handler.handleToolEnd?.("deny result", "run-1");
+  expect(classify).not.toHaveBeenCalled();
+});
+
 interface ClassifyCall {
   text: string;
   hook: HookLabel | undefined;
