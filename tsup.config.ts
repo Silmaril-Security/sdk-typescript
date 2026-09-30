@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     "adapters/vercel": "src/adapters/vercel.ts",
     "adapters/langchain": "src/adapters/langchain.ts",
+    "adapters/deepagents": "src/adapters/deepagents.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
@@ -13,5 +14,5 @@ export default defineConfig({
   splitting: false,
   target: "es2022",
   platform: "node",
-  external: ["@langchain/core", "ai"],
+  external: ["@langchain/core", "@langchain/langgraph", "deepagents", "langchain", "ai"],
 });

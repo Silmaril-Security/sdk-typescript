@@ -27,6 +27,8 @@ export type FirewallHook = (typeof FirewallHook)[keyof typeof FirewallHook];
 export const DEFAULT_HOOKS: ReadonlySet<FirewallHook> = new Set<FirewallHook>([
   FirewallHook.LLM_START,
   FirewallHook.CHAT_MODEL_START,
+  FirewallHook.TOOL_START,
+  FirewallHook.TOOL_END,
 ]);
 
 export const INPUT_HOOKS: ReadonlySet<FirewallHook> = new Set<FirewallHook>([

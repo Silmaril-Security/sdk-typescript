@@ -74,10 +74,9 @@ export async function createLangChainHandler(
   const { BaseCallbackHandler } = await import("@langchain/core/callbacks/base");
 
   const enabledHooks = resolveHooks(options.hooks);
-  // includeSystem / includeTool are retained in LangChainAdapterOptions for
-  // backwards compat but are inert under the per-message hook-routing algorithm:
-  // handleChatModelStart only scans the last user-role message; system and tool
-  // messages are either trusted or already classified by their own hooks.
+  // includeSystem remains inert for the user-only chat-model scan.
+  // includeTool still controls the explicit tool start and end callbacks.
+  const includeTool = options.includeTool ?? true;
   const failOpen = options.failOpen ?? true;
   const logger =
     options.logger ??
@@ -113,6 +112,10 @@ export async function createLangChainHandler(
     try {
       result = await firewall.classify(text, {
         hook: hookLabel,
+        metadata: {
+          langgraph: { run_id: runId },
+          ...(options.conversationId === undefined ? {} : { conversationId: options.conversationId }),
+        },
         ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
         ...(toolName !== undefined ? { toolName } : {}),
       });
@@ -205,7 +208,7 @@ export async function createLangChainHandler(
       inputStr: string,
       runId: string,
     ): Promise<void> {
-      if (!enabledHooks.has(FirewallHook.TOOL_START)) {
+      if (!includeTool || !enabledHooks.has(FirewallHook.TOOL_START)) {
         return;
       }
       const text = extractTextFromToolInput(inputStr);
@@ -249,7 +252,7 @@ export async function createLangChainHandler(
       _tags?: string[],
       _kwargs?: { name?: string },
     ): Promise<void> {
-      if (!enabledHooks.has(FirewallHook.TOOL_END)) {
+      if (!includeTool || !enabledHooks.has(FirewallHook.TOOL_END)) {
         return;
       }
       const text = String(output).trim();

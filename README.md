@@ -37,7 +37,7 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.6.2
+npm install @silmaril-security/sdk@0.7.0
 ```
 
 Requires Node 20 or later.
@@ -61,6 +61,12 @@ Optional LangChain.js support:
 
 ```sh
 npm install @langchain/core @langchain/openai
+```
+
+Optional Deep Agents support:
+
+```sh
+npm install deepagents langchain @langchain/core @langchain/langgraph
 ```
 
 ## Configuration
@@ -353,6 +359,12 @@ preserved as the backend sequence identity. No aliases are inspected. If
 callers provide `metadata.silmaril`, it must be an object and SDK-reserved keys
 are overwritten by the SDK.
 
+The `governance` option on `classify()` and per-item `governance` array on
+`classifyBatch()` send typed agent/resource context. `BlockResult.governance`
+returns the server action, policy version, and optional rule ID. A malicious
+prediction or explicit governance block is blocked in Block mode; legacy
+responses without governance remain valid.
+
 ## Errors
 
 - `SilmarilApiError`: thrown when the firewall API responds with a non-2xx or redirect status. Carries `status`, `statusText`, a 64 KiB-capped `body`, and any parsed malformed-input diagnostics. The default error message omits the body to keep logs clean.
@@ -464,6 +476,12 @@ and the LLM call proceeds. Set `failOpen: false` to make API errors bubble up.
 Blocking decisions still throw `FirewallBlockedException` unless shadow mode is
 enabled. `PromptBlockedException` continues to work as a deprecated alias for
 one release.
+Model-start, tool-start, and tool-end hooks are enabled by default; retriever
+hooks remain opt-in. The LangChain run ID is sent as
+`metadata.langgraph.run_id`; every classification gets a distinct
+`metadata.silmaril.request_id`. Supply `conversationId` to the handler for
+sequence identity; it sends `metadata.conversationId`. Callback blocks throw
+and end that graph execution.
 
 `asLangChainHandler()` is async because it lazy-loads `@langchain/core` so core
 users do not pay for it. The root package intentionally exposes a structural
@@ -477,6 +495,37 @@ import { createLangChainHandler } from "@silmaril-security/sdk/adapters/langchai
 
 const handler = await createLangChainHandler(fw);
 ```
+
+## Deep Agents
+
+```ts
+import { createProtectedDeepAgent } from "@silmaril-security/sdk/adapters/deepagents";
+
+const agent = createProtectedDeepAgent(fw, {
+  model, tools,
+  subagents: [{ name: "research", description: "Research safely" }],
+  silmaril: { conversationId },
+});
+```
+
+The constructor installs checks on the root, general-purpose, and declarative
+subagents. For a compiled subagent, call
+`createProtectedCompiledSubagent(fw, { name: "review", description: "Review",
+model, tools })` and pass its returned spec through
+`protectedCompiledSubagents`. That factory installs middleware before
+compilation. The parent constructor verifies the exact graph and Firewall
+client; it rejects arbitrary compiled runnables. Root custom middleware does
+not automatically reach every subagent.
+
+The middleware checks input before model use, tool calls before execution,
+tool results before the next model call, and non-streamed model output before
+the graph consumes it. In Block mode, denied tool interactions become a fixed
+safe `ToolMessage` with the original call ID. The agent can choose an allowed
+alternative; repeated denials end with a fixed safe response. Denied model
+output is replaced. Shadow and Warn report decisions through `onClassify`
+without replacing content. Classification errors allow model and tool execution
+by default; set `silmaril: { failOpen: false }` to require a successful
+classification. Already emitted streaming text cannot be recalled.
 
 ## Retries
 

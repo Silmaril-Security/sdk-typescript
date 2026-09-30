@@ -42,7 +42,9 @@ describe("Hook sets", () => {
   it("DEFAULT_HOOKS contains chat_model_start and llm_start", () => {
     expect(DEFAULT_HOOKS.has(FirewallHook.CHAT_MODEL_START)).toBe(true);
     expect(DEFAULT_HOOKS.has(FirewallHook.LLM_START)).toBe(true);
-    expect(DEFAULT_HOOKS.size).toBe(2);
+    expect(DEFAULT_HOOKS.has(FirewallHook.TOOL_START)).toBe(true);
+    expect(DEFAULT_HOOKS.has(FirewallHook.TOOL_END)).toBe(true);
+    expect(DEFAULT_HOOKS.size).toBe(4);
   });
 
   it("INPUT_HOOKS and OUTPUT_HOOKS are disjoint", () => {

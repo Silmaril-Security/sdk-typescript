@@ -1,6 +1,6 @@
 {
   "name": "@silmaril-security/sdk",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "TypeScript SDK for Silmaril Firewall — prompt injection and jailbreak detection",
   "license": "SEE LICENSE IN LICENSE",
   "author": "Silmaril Security Inc.",
@@ -58,7 +58,17 @@
         "default": "./dist/adapters/langchain.cjs"
       }
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./adapters/deepagents": {
+      "import": {
+        "types": "./dist/adapters/deepagents.d.ts",
+        "default": "./dist/adapters/deepagents.js"
+      },
+      "require": {
+        "types": "./dist/adapters/deepagents.d.cts",
+        "default": "./dist/adapters/deepagents.cjs"
+      }
+    }
   },
   "files": [
     "dist",
@@ -83,29 +93,45 @@
   },
   "peerDependencies": {
     "@langchain/core": ">=0.3.0",
-    "ai": "^5.0.0 || ^6.0.0"
+    "@langchain/langgraph": "^1.4.10",
+    "ai": "^5.0.0 || ^6.0.0",
+    "deepagents": "^1.14.1",
+    "langchain": "^1.5.10"
   },
   "peerDependenciesMeta": {
     "@langchain/core": {
       "optional": true
     },
+    "@langchain/langgraph": {
+      "optional": true
+    },
     "ai": {
+      "optional": true
+    },
+    "deepagents": {
+      "optional": true
+    },
+    "langchain": {
       "optional": true
     }
   },
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.10",
-    "@langchain/core": "^1.1.39",
+    "@langchain/core": "^1.2.9",
+    "@langchain/langgraph": "^1.4.10",
     "@types/node": "^20.12.0",
     "@typescript-eslint/eslint-plugin": "^7.8.0",
     "@typescript-eslint/parser": "^7.8.0",
     "ai": "^6.0.191",
+    "deepagents": "^1.14.1",
     "eslint": "^8.57.0",
+    "langchain": "^1.5.10",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
     "undici": "^6.28.0",
     "vite": "6.4.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "zod": "^4.6.5"
   },
   "overrides": {
     "esbuild": "0.28.1",
