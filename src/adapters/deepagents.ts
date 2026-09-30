@@ -40,6 +40,24 @@ function textOfStructuredValue(value: unknown, seen = new WeakSet<object>()): st
   return Object.entries(value).map(([key, item]) => `${key}: ${textOfStructuredValue(item, seen)}`).join("\n");
 }
 
+function stripAllowedMarker(result: ToolMessage | Command): ToolMessage | Command {
+  const strip = (message: ToolMessage): void => {
+    if (message.additional_kwargs?.silmarilBlocked === BLOCKED_TOOL_MARKER) {
+      delete message.additional_kwargs.silmarilBlocked;
+    }
+  };
+  if (ToolMessage.isInstance(result)) strip(result);
+  else if (result instanceof Command) {
+    const update = result.update;
+    if (update && !Array.isArray(update) && "messages" in update && Array.isArray(update.messages)) {
+      for (const message of update.messages) {
+        if (ToolMessage.isInstance(message)) strip(message);
+      }
+    }
+  }
+  return result;
+}
+
 export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgentsMiddlewareOptions = {}) {
   const maxBlockedAttempts = options.maxBlockedAttempts ?? 3;
   if (!Number.isInteger(maxBlockedAttempts) || maxBlockedAttempts < 1) {
@@ -121,13 +139,15 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         resultText = ToolMessage.isInstance(result) ? textOf(result)
           : result instanceof Command ? textOfStructuredValue(result.update) : String(result);
       } catch {
-        // An uninspectable result must not enter graph state in Block mode.
-        return safe();
+        // Content cannot be inspected, but the backend still resolves the
+        // enforcement mode. Observation modes retain the original result.
+        const decision = await classify("[uninspectable tool result]", HookLabel.TOOL_RESPONSE, request.toolCall.name);
+        return decision.mode === "block" ? safe() : stripAllowedMarker(result);
       }
       if ((await classify(resultText, HookLabel.TOOL_RESPONSE, request.toolCall.name)).enforce) {
         return safe();
       }
-      return result;
+      return stripAllowedMarker(result);
     },
   });
 }

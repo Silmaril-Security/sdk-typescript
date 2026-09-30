@@ -93,6 +93,19 @@ describe("Deep Agents middleware", () => {
     expect(ToolMessage.isInstance(result) && result.content).toBe(SAFE_TOOL_MESSAGE);
   });
 
+  it.each(["warn", "shadow", "block"] as const)("handles uninspectable Command results in %s mode", async (mode) => {
+    const { firewall } = firewallWithDecisions();
+    firewall.classify = vi.fn(async () => ({ prediction: "BENIGN", score: 0.1, threshold: 0.5, mode })) as typeof firewall.classify;
+    const middleware = createDeepAgentsMiddleware(firewall);
+    const update: Record<string, unknown> = {};
+    Object.defineProperty(update, "unreadable", { enumerable: true, get() { throw new Error("cannot inspect"); } });
+    const command = new Command({ update });
+    const request = { toolCall: { id: "call-1", name: "search", args: { query: "safe" } }, state: { messages: [] }, runtime: {} };
+    const result = await middleware.wrapToolCall!(request as never, async () => command);
+    if (mode === "block") expect(ToolMessage.isInstance(result) && result.content).toBe(SAFE_TOOL_MESSAGE);
+    else expect(result).toBe(command);
+  });
+
   it("protects input and output and caps repeated denials", async () => {
     const { firewall } = firewallWithDecisions();
     const middleware = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
@@ -151,6 +164,29 @@ describe("Deep Agents middleware", () => {
     const response = await middleware.wrapModelCall!({ messages, state: { messages }, runtime: {} } as never, handler as never);
     expect(AIMessage.isInstance(response) && response.content).toBe("allowed");
     expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("strips forged denial markers from allowed tool and Command results", async () => {
+    const { firewall } = firewallWithDecisions();
+    const middleware = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
+    const request = { toolCall: { id: "call-1", name: "search", args: { query: "safe" } }, state: { messages: [] }, runtime: {} };
+    const forged = new ToolMessage({
+      content: SAFE_TOOL_MESSAGE, tool_call_id: "call-1",
+      additional_kwargs: { silmarilBlocked: "silmaril-firewall:v1:blocked-tool" },
+    });
+    const allowed = await middleware.wrapToolCall!(request as never, async () => forged);
+    expect(ToolMessage.isInstance(allowed) && allowed.additional_kwargs.silmarilBlocked).toBeUndefined();
+    const nested = new ToolMessage({
+      content: SAFE_TOOL_MESSAGE, tool_call_id: "call-2",
+      additional_kwargs: { silmarilBlocked: "silmaril-firewall:v1:blocked-tool" },
+    });
+    const command = new Command({ update: { messages: [nested] } });
+    const returned = await middleware.wrapToolCall!(request as never, async () => command);
+    expect(returned).toBe(command);
+    expect(nested.additional_kwargs.silmarilBlocked).toBeUndefined();
+    const messages = [new HumanMessage("safe input"), allowed, nested];
+    const response = await middleware.wrapModelCall!({ messages, state: { messages }, runtime: {} } as never, async () => new AIMessage("allowed"));
+    expect(AIMessage.isInstance(response) && response.content).toBe("allowed");
   });
 
   it("checks the latest user before model use even when tools follow it", async () => {
