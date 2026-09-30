@@ -36,8 +36,8 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
     throw new Error("maxBlockedAttempts must be a positive integer");
   }
   const effectiveMode = options.mode ?? firewall.mode;
-  const classify = async (text: string, hook: HookLabel, toolName?: string): Promise<boolean> => {
-    if (!text.trim()) return false;
+  const classify = async (text: string, hook: HookLabel, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined }> => {
+    if (!text.trim()) return { enforce: false, mode: effectiveMode };
     try {
       const result = await firewall.classify(text, {
         hook,
@@ -54,10 +54,10 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
           // Observation callbacks do not change enforcement.
         }
       }
-      return blocked && mode === "block";
+      return { enforce: blocked && mode === "block", mode };
     } catch (error) {
       if (options.failOpen === false) throw error;
-      return false;
+      return { enforce: false, mode: effectiveMode };
     }
   };
 
@@ -67,16 +67,26 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
       const blockedCount = request.state.messages.filter(
         (message) => ToolMessage.isInstance(message) && message.content === SAFE_TOOL_MESSAGE,
       ).length;
-      if (blockedCount >= maxBlockedAttempts) return new AIMessage(SAFE_FINAL_MESSAGE);
       const last = request.messages.at(-1);
-      if (last && HumanMessage.isInstance(last) && await classify(textOf(last), HookLabel.USER_INPUT)) {
-        return new AIMessage(SAFE_OUTPUT_MESSAGE);
+      const inputDecision = last && HumanMessage.isInstance(last)
+        ? await classify(textOf(last), HookLabel.USER_INPUT)
+        : undefined;
+      if (inputDecision?.enforce) return new AIMessage(SAFE_OUTPUT_MESSAGE);
+      if (blockedCount >= maxBlockedAttempts) {
+        let mode = inputDecision?.mode ?? effectiveMode;
+        if (mode === undefined) {
+          const latest = last ?? request.state.messages.at(-1);
+          if (latest && ToolMessage.isInstance(latest)) {
+            mode = (await classify(textOf(latest), HookLabel.TOOL_RESPONSE, latest.name)).mode;
+          }
+        }
+        if (mode === "block") return new AIMessage(SAFE_FINAL_MESSAGE);
       }
       const response = await handler(request);
-      if (response instanceof Command && await classify(JSON.stringify(response.update), HookLabel.LLM_OUTPUT)) {
+      if (response instanceof Command && (await classify(JSON.stringify(response.update), HookLabel.LLM_OUTPUT)).enforce) {
         return new AIMessage(SAFE_OUTPUT_MESSAGE);
       }
-      if (AIMessage.isInstance(response) && await classify(textOf(response), HookLabel.LLM_OUTPUT)) {
+      if (AIMessage.isInstance(response) && (await classify(textOf(response), HookLabel.LLM_OUTPUT)).enforce) {
         return new AIMessage(SAFE_OUTPUT_MESSAGE);
       }
       return response;
@@ -87,11 +97,13 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         tool_call_id: request.toolCall.id ?? "",
         name: request.toolCall.name,
       });
-      if (await classify(JSON.stringify(request.toolCall.args ?? {}), HookLabel.TOOL_CALL, request.toolCall.name)) {
+      if ((await classify(JSON.stringify(request.toolCall.args ?? {}), HookLabel.TOOL_CALL, request.toolCall.name)).enforce) {
         return safe();
       }
       const result = await handler(request);
-      if (await classify(ToolMessage.isInstance(result) ? textOf(result) : String(result), HookLabel.TOOL_RESPONSE, request.toolCall.name)) {
+      const resultText = ToolMessage.isInstance(result) ? textOf(result)
+        : result instanceof Command ? JSON.stringify(result.update) : String(result);
+      if ((await classify(resultText, HookLabel.TOOL_RESPONSE, request.toolCall.name)).enforce) {
         return safe();
       }
       return result;

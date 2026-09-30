@@ -1,4 +1,5 @@
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { Command } from "@langchain/langgraph";
 import { describe, expect, it, vi } from "vitest";
 
 import { Firewall, HookLabel } from "../src/index.js";
@@ -46,6 +47,30 @@ describe("Deep Agents middleware", () => {
     expect(ToolMessage.isInstance(denied) && denied.content).toBe(SAFE_TOOL_MESSAGE);
     const allowed = await middleware.wrapToolCall!(request as never, async () => new ToolMessage({ content: "allowed", tool_call_id: "call-1" }));
     expect(ToolMessage.isInstance(allowed) && allowed.content).toBe("allowed");
+  });
+
+  it("classifies structured Command tool results before returning them", async () => {
+    const { firewall, calls } = firewallWithDecisions();
+    const middleware = createDeepAgentsMiddleware(firewall);
+    const request = { toolCall: { id: "call-1", name: "search", args: { query: "safe" } }, state: { messages: [] }, runtime: {} };
+    const result = await middleware.wrapToolCall!(request as never, async () => new Command({
+      update: { messages: [new ToolMessage({ content: "deny result", tool_call_id: "call-1" })] },
+    }));
+    expect(calls.some((call) => call.hook === HookLabel.TOOL_RESPONSE && call.text.includes("deny result"))).toBe(true);
+    expect(ToolMessage.isInstance(result) && result.content).toBe(SAFE_TOOL_MESSAGE);
+    expect(ToolMessage.isInstance(result) && result.tool_call_id).toBe("call-1");
+  });
+
+  it.each(["warn", "shadow"] as const)("does not cap prior denials in backend %s mode", async (mode) => {
+    const { firewall } = firewallWithDecisions();
+    firewall.classify = vi.fn(async () => ({ prediction: "MALICIOUS", score: 0.9, threshold: 0.5, mode })) as typeof firewall.classify;
+    const middleware = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
+    const handler = vi.fn(async () => new AIMessage("original output"));
+    const previous = new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-1" });
+    const request = { messages: [previous], state: { messages: [previous, new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-2" })] }, runtime: {} };
+    const response = await middleware.wrapModelCall!(request as never, handler as never);
+    expect(handler).toHaveBeenCalledOnce();
+    expect(AIMessage.isInstance(response) && response.content).toBe("original output");
   });
 
   it("protects input and output and caps repeated denials", async () => {
