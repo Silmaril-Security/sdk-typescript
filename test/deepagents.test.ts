@@ -92,6 +92,33 @@ describe("Deep Agents middleware", () => {
     expect(AIMessage.isInstance(terminal) && terminal.content).toBe(SAFE_FINAL_MESSAGE);
   });
 
+  it("checks the latest user before model use even when tools follow it", async () => {
+    const { firewall, calls } = firewallWithDecisions();
+    const middleware = createDeepAgentsMiddleware(firewall);
+    const handler = vi.fn(async () => new AIMessage("allowed"));
+    const messages = [new HumanMessage("deny input"), new AIMessage("intermediate"), new ToolMessage({ content: "safe", tool_call_id: "call-1" })];
+    const request = { messages, state: { messages }, runtime: {} };
+    const response = await middleware.wrapModelCall!(request as never, handler as never);
+    expect(AIMessage.isInstance(response) && response.content).toBe(SAFE_OUTPUT_MESSAGE);
+    expect(handler).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.hook === HookLabel.USER_INPUT && call.text === "deny input")).toBe(true);
+  });
+
+  it("resets the denial cap for a new user turn", async () => {
+    const { firewall } = firewallWithDecisions();
+    const middleware = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
+    const messages = [
+      new HumanMessage("first"),
+      new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-1" }),
+      new ToolMessage({ content: SAFE_TOOL_MESSAGE, tool_call_id: "call-2" }),
+      new HumanMessage("new safe request"),
+      new ToolMessage({ content: "safe result", tool_call_id: "call-3" }),
+    ];
+    const request = { messages, state: { messages }, runtime: {} };
+    const response = await middleware.wrapModelCall!(request as never, async () => new AIMessage("allowed"));
+    expect(AIMessage.isInstance(response) && response.content).toBe("allowed");
+  });
+
   it("requires protection inside a compiled subagent", () => {
     const { firewall } = firewallWithDecisions();
     expect(() => createProtectedDeepAgent(firewall, { subagents: [

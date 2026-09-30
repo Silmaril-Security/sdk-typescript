@@ -64,12 +64,21 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
   return createMiddleware({
     name: "SilmarilDeepAgentsMiddleware",
     wrapModelCall: async (request, handler) => {
-      const blockedCount = request.state.messages.filter(
+      const history = request.state.messages;
+      let lastUserIndex = -1;
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (HumanMessage.isInstance(history[i])) {
+          lastUserIndex = i;
+          break;
+        }
+      }
+      const blockedCount = history.slice(lastUserIndex + 1).filter(
         (message) => ToolMessage.isInstance(message) && message.content === SAFE_TOOL_MESSAGE,
       ).length;
       const last = request.messages.at(-1);
-      const inputDecision = last && HumanMessage.isInstance(last)
-        ? await classify(textOf(last), HookLabel.USER_INPUT)
+      const latestUser = [...request.messages].reverse().find(HumanMessage.isInstance);
+      const inputDecision = latestUser
+        ? await classify(textOf(latestUser), HookLabel.USER_INPUT)
         : undefined;
       if (inputDecision?.enforce) return new AIMessage(SAFE_OUTPUT_MESSAGE);
       if (blockedCount >= maxBlockedAttempts) {
