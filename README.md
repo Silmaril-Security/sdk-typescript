@@ -21,7 +21,7 @@ This SDK provides the low-level TypeScript interface for that workflow:
 - Honor backend threat and governance decisions and effective Shadow, Warn, or
   Block behavior in adapters.
 - Send each complete sanitized event in one request.
-- Preserve exact `metadata.conversationId` sequence identity and add one event ID.
+- On individual `classify()` calls, preserve exact `metadata.conversationId` as sequence identity and add one event ID.
 - Retry API rate-limit responses.
 - Optionally attach the firewall to Vercel AI SDK middleware, LangChain.js
   callback flows, and Deep Agents middleware/constructors.
@@ -131,8 +131,9 @@ threshold.
 ## Concurrency and Cancellation
 
 A `Firewall` instance holds no per-request state, so one client can serve any
-number of concurrent calls in a runtime. Responses are matched to their own
-promise regardless of completion order:
+number of concurrent calls in a runtime. Concurrent calls are appropriate for
+independent events or different conversations. Responses are matched to their
+own promise regardless of completion order:
 
 ```ts
 const [userResult, toolResult] = await Promise.all([
@@ -140,6 +141,10 @@ const [userResult, toolResult] = await Promise.all([
   fw.classify(toolOutput, { hook: HookLabel.TOOL_RESPONSE, toolName: "read_file" }),
 ]);
 ```
+
+Events that belong to one conversation are not independent. Send them with
+ordered individual `classify()` calls that share `metadata.conversationId`, and
+wait for each call before sending the next event for that conversation.
 
 Pass a `signal` to cancel one call without touching its siblings:
 
@@ -354,14 +359,21 @@ await fw.classify(text, {
 ```
 
 The SDK preserves caller metadata and adds a reserved `metadata.silmaril`
-namespace to every request. SDK-controlled fields are `sdk_language`,
-`sdk_version`, and `request_id`; batches additionally carry `input_index` for
-diagnostics and remain stateless. `governance` is also SDK-controlled whenever
-the typed governance option is supplied; it replaces any caller-provided
-`metadata.silmaril.governance` value. Exact `metadata.conversationId` is
-preserved as the backend sequence identity. No aliases are inspected. If
-callers provide `metadata.silmaril`, it must be an object and SDK-reserved keys
-are overwritten by the SDK.
+namespace to every request, including each batch item. SDK-controlled fields
+are `sdk_language`, `sdk_version`, and `request_id`; batches additionally
+carry `input_index` for diagnostics. `governance` is also SDK-controlled
+whenever the typed governance option is supplied; it replaces any
+caller-provided `metadata.silmaril.governance` value. On individual
+`classify()` calls, exact `metadata.conversationId` is preserved as the
+backend sequence identity. Batch items also preserve per-item metadata,
+including `metadata.conversationId`, but current Cascade treats each input
+independently and neither reads nor updates conversation history. Giving items
+the same `metadata.conversationId` does not connect them into a sequence. For
+conversation-aware checks, send complete events through ordered individual
+`classify()` calls with the same `metadata.conversationId`, and wait for each
+call before sending the next event for that conversation. No aliases are
+inspected. If callers provide `metadata.silmaril`, it must be an object and
+SDK-reserved keys are overwritten by the SDK.
 
 The `governance` option on `classify()` and per-item `governance` array on
 `classifyBatch()` send typed agent/resource context. `BlockResult.governance`
@@ -382,9 +394,14 @@ All SDK exception types extend `Error` and work with `instanceof`.
 ## Complete events
 
 `classify()` sanitizes invalid Unicode surrogate fragments and sends the full
-logical event once. The backend owns token-window processing and sequence
-ordering. `classifyBatch()` continues to send independent stateless texts as one
-batch request.
+logical event once. For conversation-aware checks, send those complete events
+through ordered individual `classify()` calls with the same
+`metadata.conversationId`, and wait for each call before sending the next
+event for that conversation. The backend owns token-window processing and
+sequence ordering for those individual calls. `classifyBatch()` sends
+independent texts in one request: each item keeps its metadata, including
+`metadata.conversationId`, but Cascade neither reads nor updates conversation
+history for the batch.
 
 ## Batch Classification
 
@@ -409,8 +426,30 @@ console.log(`classified ${results.length} items`);
 
 Batch requests preserve result order and can carry per-item hooks, tool names,
 metadata, and governance. Hook, tool-name, metadata, and governance arrays must
-match the number of texts. Each batch carries SDK metadata per item so the
-backend can apply tenant-owned thresholding.
+match the number of texts. Each batch item preserves caller metadata, including
+`metadata.conversationId`, and carries SDK metadata so the backend can apply
+tenant-owned thresholding. Current Cascade treats each input independently and
+neither reads nor updates conversation history. Giving items the same
+`metadata.conversationId` does not connect them into a sequence.
+
+For conversation-aware checks, send complete events through ordered individual
+`classify()` calls with the same `metadata.conversationId`. Wait for each call
+before sending the next event for that conversation:
+
+```ts
+const conversationId = "customer-conversation-123";
+
+const first = await fw.classify(firstEvent, {
+  hook: HookLabel.USER_INPUT,
+  metadata: { conversationId },
+});
+
+const second = await fw.classify(secondEvent, {
+  hook: HookLabel.TOOL_RESPONSE,
+  toolName: "read_file",
+  metadata: { conversationId },
+});
+```
 
 ## Migration Notes
 
