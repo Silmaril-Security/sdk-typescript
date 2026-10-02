@@ -18,7 +18,7 @@ This SDK provides the low-level TypeScript interface for that workflow:
 - Classify user input, tool calls, tool responses, model output, or system
   prompt content.
 - Preserve hook and tool-name context for more accurate decisions.
-- Enforce backend-owned adaptive thresholds and effective Shadow, Warn, or
+- Honor backend threat and governance decisions and effective Shadow, Warn, or
   Block behavior in adapters.
 - Send each complete sanitized event in one request.
 - Preserve exact `metadata.conversationId` sequence identity and add one event ID.
@@ -119,12 +119,14 @@ console.log(`tool output: ${toolResult.prediction} ${toolResult.score.toFixed(4)
 ```
 
 `classify()` and `classifyBatch()` return the server's prediction, score, and
-applied threshold. Direct calls do not throw on a `MALICIOUS` prediction or a
-governance block. The Vercel AI SDK and LangChain.js adapters throw
+diagnostic threshold. Direct calls do not throw on a `MALICIOUS` prediction or
+a governance block. The Vercel AI SDK and LangChain.js adapters throw
 `FirewallBlockedException` only when `prediction` is `MALICIOUS` or
 `governance.action` is `block`, and the effective mode is `block`.
-`result.threshold` is the server-applied value carried on the result and the
-exception. The adapters do not compare `score` to a local threshold.
+`result.threshold` is backend-returned diagnostic metadata carried on the
+result and the exception. Disabled and observe policy paths can retain the
+compatibility threshold. The adapters do not compare `score` to a local
+threshold.
 
 ## Concurrency and Cancellation
 
@@ -245,17 +247,16 @@ to each attempt and is combined with any caller-supplied `signal`.
 
 ## Backend Thresholding
 
-Customers do not tune score thresholds in the SDK. Tenant Firewall config owns
-the adaptive threshold schedule and can override the source defaults
-`base_threshold=0.5`, `target_sequence_fpr=0.01`, and
-`max_adaptive_threshold=0.9`. With those defaults, 1 scoring opportunity uses
-`0.5`, 2 use about `0.6661`, 5 use about `0.8328`, and 10 or more are capped
-at `0.9`.
+Customers do not tune score thresholds in the SDK. The Firewall backend owns
+the threat decision and threshold policy. The current Cascade backend resolves
+decision thresholds from a tenant default or a hook-specific override; it does
+not raise them as text length, token-window count, batch size, or conversation
+length grows.
 
-The SDK does not send `threshold` in request payloads. The backend owns the
-applied threshold, which remains available on
-`BlockResult.threshold` and `FirewallBlockedException.threshold` as diagnostic
-metadata.
+The SDK does not send `threshold` in request payloads. `BlockResult.threshold`
+and `FirewallBlockedException.threshold` are backend-returned diagnostic
+metadata. Disabled and observe policy paths can retain the compatibility
+threshold.
 
 ## Modes
 
