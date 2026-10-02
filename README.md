@@ -443,11 +443,13 @@ const { text } = await generateText({ model, prompt: "Hello" });
 console.log(text);
 ```
 
-Middleware scans input by default, including tool-result messages in the prompt
-classified as `tool_response`. Set `scanOutput: true` to classify model text,
-and `scanToolCalls: true` to classify tool-call arguments on generate results.
-Infrastructure errors and blocking decisions are fail-closed by default and
-bubble up to the caller.
+Middleware scans input by default (`scanInput` defaults to true). It classifies
+that message's tool-result parts as `tool_response` only when the newest prompt
+message is a tool message. Otherwise it classifies the latest user message as
+`user_input` and does not scan earlier tool results. Set `scanOutput: true` to
+classify model text, and `scanToolCalls: true` to classify tool-call arguments
+on generate results. Infrastructure errors and blocking decisions are
+fail-closed by default and bubble up to the caller.
 
 When `scanOutput: true` is combined with streaming, output is classified in the
 stream's `flush` after all deltas have been emitted, so blocking is advisory:
