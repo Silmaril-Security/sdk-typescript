@@ -7,9 +7,12 @@ All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 - Add optional Deep Agents middleware and protected constructors for root, general-purpose,
   declarative, and explicitly protected compiled subagents. The compiled graph factory
   records middleware installation and constructors reject unverified graphs.
+- Declare optional peer dependencies for Deep Agents:
+  `deepagents@^1.14.1`, `langchain@^1.5.10`, `@langchain/langgraph@^1.4.10`, and
+  existing `@langchain/core@>=0.3.0`.
 - Enforce input, tool-call, tool-result, and non-streamed model-output decisions in
-  Block mode with safe continuation and a repeated-denial cap. Shadow and Warn report
-  decisions without changing content.
+  Block mode with safe continuation and a repeated-denial cap (`maxBlockedAttempts`,
+  default `3`). Shadow and Warn report decisions without changing content.
 - Enable LangChain tool start/end callbacks by default and send the LangChain run ID
   as correlation metadata alongside a distinct classification request ID per event.
 
