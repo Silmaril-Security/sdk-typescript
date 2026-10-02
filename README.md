@@ -23,8 +23,8 @@ This SDK provides the low-level TypeScript interface for that workflow:
 - Send each complete sanitized event in one request.
 - Preserve exact `metadata.conversationId` sequence identity and add one event ID.
 - Retry API rate-limit responses.
-- Optionally attach the firewall to Vercel AI SDK middleware and LangChain.js
-  callback flows.
+- Optionally attach the firewall to Vercel AI SDK middleware, LangChain.js
+  callback flows, and Deep Agents middleware/constructors.
 
 ## Install
 
@@ -63,10 +63,10 @@ Optional LangChain.js support:
 npm install @langchain/core @langchain/openai
 ```
 
-Optional Deep Agents support:
+Optional Deep Agents support (peer ranges shipped with `0.7.0`):
 
 ```sh
-npm install deepagents langchain @langchain/core @langchain/langgraph
+npm install "deepagents@^1.14.1" "langchain@^1.5.10" "@langchain/core@>=0.3.0" "@langchain/langgraph@^1.4.10"
 ```
 
 ## Configuration
@@ -119,9 +119,12 @@ console.log(`tool output: ${toolResult.prediction} ${toolResult.score.toFixed(4)
 ```
 
 `classify()` and `classifyBatch()` return the server's prediction, score, and
-internally applied threshold. Direct calls do not throw on malicious verdicts.
-The Vercel AI SDK and LangChain.js adapters use `result.threshold` and throw
-`FirewallBlockedException` when enforcement is enabled.
+applied threshold. Direct calls do not throw on a `MALICIOUS` prediction or a
+governance block. The Vercel AI SDK and LangChain.js adapters throw
+`FirewallBlockedException` only when `prediction` is `MALICIOUS` or
+`governance.action` is `block`, and the effective mode is `block`.
+`result.threshold` is the server-applied value carried on the result and the
+exception. The adapters do not compare `score` to a local threshold.
 
 ## Concurrency and Cancellation
 
@@ -243,11 +246,11 @@ to each attempt and is combined with any caller-supplied `signal`.
 ## Backend Thresholding
 
 Customers do not tune score thresholds in the SDK. Tenant Firewall config owns
-the adaptive threshold schedule. The default backend config is
+the adaptive threshold schedule and can override the source defaults
 `base_threshold=0.5`, `target_sequence_fpr=0.01`, and
-`max_adaptive_threshold=0.9`, which keeps the current schedule: 1 scoring
-opportunity uses `0.5`, 2 use about `0.6661`, 5 use about `0.8328`, and 10 or
-more are capped at `0.9`.
+`max_adaptive_threshold=0.9`. With those defaults, 1 scoring opportunity uses
+`0.5`, 2 use about `0.6661`, 5 use about `0.8328`, and 10 or more are capped
+at `0.9`.
 
 The SDK does not send `threshold` in request payloads. The backend owns the
 applied threshold, which remains available on
@@ -370,7 +373,8 @@ responses without governance remain valid.
 - `SilmarilApiError`: thrown when the firewall API responds with a non-2xx or redirect status. Carries `status`, `statusText`, a 64 KiB-capped `body`, and any parsed malformed-input diagnostics. The default error message omits the body to keep logs clean.
 - `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters when a malicious or governance-block decision has effective Block mode. The message distinguishes governance-policy denials from threat-score denials. Carries `score`, `threshold`, `promptText`, and optional `runId`, `hook`, `toolName`, `toolCallId`, and `result`.
 
-`PromptBlockedException` remains as a deprecated alias for one release.
+`PromptBlockedException` remains as a deprecated alias of
+`FirewallBlockedException`.
 
 All SDK exception types extend `Error` and work with `instanceof`.
 
@@ -403,9 +407,9 @@ console.log(`classified ${results.length} items`);
 ```
 
 Batch requests preserve result order and can carry per-item hooks, tool names,
-and metadata. Hook, tool-name, and metadata arrays must match the number of
-texts. Each batch carries SDK metadata per item so the backend can apply
-tenant-owned thresholding.
+metadata, and governance. Hook, tool-name, metadata, and governance arrays must
+match the number of texts. Each batch carries SDK metadata per item so the
+backend can apply tenant-owned thresholding.
 
 ## Migration Notes
 
@@ -416,7 +420,7 @@ tenant/backend config, adds SDK reconstruction metadata, renames blocking
 exceptions to `FirewallBlockedException`, keeps optional LangChain.js types out
 of the root package declarations, adds typed CJS/ESM export conditions, supports
 Vercel AI SDK v5 and v6. The deprecated
-`PromptBlockedException` alias remains available for one release.
+`PromptBlockedException` alias remains available.
 
 ## Vercel AI SDK Middleware
 
@@ -439,10 +443,13 @@ const { text } = await generateText({ model, prompt: "Hello" });
 console.log(text);
 ```
 
-Middleware scans input by default. Set `scanOutput: true` to classify model
-text, and `scanToolCalls: true` to classify tool-call arguments. Infrastructure
-errors and blocking decisions are fail-closed by default and bubble up to the
-caller.
+Middleware scans input by default (`scanInput` defaults to true). It classifies
+that message's tool-result parts as `tool_response` only when the newest prompt
+message is a tool message. Otherwise it classifies the latest user message as
+`user_input` and does not scan earlier tool results. Set `scanOutput: true` to
+classify model text, and `scanToolCalls: true` to classify tool-call arguments
+on generate results. Infrastructure errors and blocking decisions are
+fail-closed by default and bubble up to the caller.
 
 When `scanOutput: true` is combined with streaming, output is classified in the
 stream's `flush` after all deltas have been emitted, so blocking is advisory:
@@ -473,11 +480,11 @@ await model.invoke("Hello");
 
 The LangChain handler is fail-open by default: infrastructure errors are logged
 and the LLM call proceeds. Set `failOpen: false` to make API errors bubble up.
-Blocking decisions still throw `FirewallBlockedException` unless shadow mode is
-enabled. `PromptBlockedException` continues to work as a deprecated alias for
-one release.
+Blocking decisions throw `FirewallBlockedException` only when the effective mode
+is Block; Shadow and Warn preserve the host flow.
+`PromptBlockedException` continues to work as a deprecated alias.
 Model-start, tool-start, and tool-end hooks are enabled by default; retriever
-hooks remain opt-in. The LangChain run ID is sent as
+and model-end (`LLM_END`) hooks remain opt-in. The LangChain run ID is sent as
 `metadata.langgraph.run_id`; every classification gets a distinct
 `metadata.silmaril.request_id`. Supply `conversationId` to the handler for
 sequence identity; it sends `metadata.conversationId`. Callback blocks throw
@@ -515,17 +522,19 @@ model, tools })` and pass its returned spec through
 `protectedCompiledSubagents`. That factory installs middleware before
 compilation. The parent constructor verifies the exact graph and Firewall
 client; it rejects arbitrary compiled runnables. Root custom middleware does
-not automatically reach every subagent.
+not automatically reach every subagent. For custom agent construction, import
+`createDeepAgentsMiddleware` from the same adapter subpath.
 
 The middleware checks input before model use, tool calls before execution,
 tool results before the next model call, and non-streamed model output before
 the graph consumes it. In Block mode, denied tool interactions become a fixed
 safe `ToolMessage` with the original call ID. The agent can choose an allowed
-alternative; repeated denials end with a fixed safe response. Denied model
-output is replaced. Shadow and Warn report decisions through `onClassify`
-without replacing content. Classification errors allow model and tool execution
-by default; set `silmaril: { failOpen: false }` to require a successful
-classification. Already emitted streaming text cannot be recalled.
+alternative; after `maxBlockedAttempts` denials (default `3`), the middleware
+returns a fixed safe final response. Denied model output is replaced. Shadow
+and Warn report decisions through `onClassify` without replacing content.
+Classification errors allow model and tool execution by default; set
+`silmaril: { failOpen: false }` to require a successful classification. Already
+emitted streaming text cannot be recalled.
 
 ## Retries
 
