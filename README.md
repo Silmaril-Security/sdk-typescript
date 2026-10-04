@@ -37,7 +37,7 @@ npm install @silmaril-security/sdk
 For reproducible installs, pin a tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.7.0
+npm install @silmaril-security/sdk@0.7.1
 ```
 
 Requires Node 20 or later.
@@ -450,6 +450,11 @@ const second = await fw.classify(secondEvent, {
   metadata: { conversationId },
 });
 ```
+
+Batch responses must contain a `predictions` array with exactly one result per
+sent input. A missing array or mismatched count raises an `Error` before
+results are returned or blocking callbacks run. Retries use the original
+payload snapshot, even if caller-owned inputs change while the request is in flight.
 
 ## Migration Notes
 

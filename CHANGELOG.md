@@ -2,6 +2,11 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.7.1 - 2026-10-04
+
+- Reject malformed batch responses and result counts that do not match the
+  serialized request, including retried requests whose caller inputs change.
+
 ## 0.7.0 - 2026-09-30
 
 - Add optional Deep Agents middleware and protected constructors for root, general-purpose,
