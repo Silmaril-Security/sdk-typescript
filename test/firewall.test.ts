@@ -571,19 +571,18 @@ describe("Firewall.classifyBatch", () => {
         status: 200,
         body: {
           predictions: [
-            { prediction: "BENIGN", score: 0.01 },
-            { prediction: "MALICIOUS", score: 0.9 },
+            { prediction: "BENIGN", score: "0.01" },
+            { prediction: "MALICIOUS", score: "0.9" },
           ],
         },
       },
     ]);
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     const results = await fw.classifyBatch(["a", "b"], { requestId: "batch-req" });
-    expect(results).toHaveLength(2);
-    expect(results[0]!.prediction).toBe("BENIGN");
-    expect(results[1]!.prediction).toBe("MALICIOUS");
-    expect(results[0]!.threshold).toBe(0.5);
-    expect(results[1]!.threshold).toBe(0.5);
+    expect(results).toEqual([
+      { prediction: "BENIGN", score: 0.01, threshold: 0.5, mode: "block" },
+      { prediction: "MALICIOUS", score: 0.9, threshold: 0.5, mode: "block" },
+    ]);
     expect(calls[0]!.body).toEqual({
       texts: ["a", "b"],
       metadata: [
@@ -591,6 +590,79 @@ describe("Firewall.classifyBatch", () => {
         { silmaril: silmarilMetadata("batch-req", 1) },
       ],
     });
+  });
+
+  it.each([
+    { description: "zero", predictions: [] },
+    {
+      description: "one",
+      predictions: [{ prediction: "BENIGN", score: 0.01 }],
+    },
+  ])("rejects too few predictions ($description)", async ({ predictions }) => {
+    const { calls } = mockFetch([{ status: 200, body: { predictions } }]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    await expect(fw.classifyBatch(["a", "b"])).rejects.toThrow(
+      new RegExp(
+        `response predictions length ${predictions.length} does not match submitted texts length 2`,
+      ),
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects too many predictions", async () => {
+    const { calls } = mockFetch([
+      {
+        status: 200,
+        body: {
+          predictions: [
+            { prediction: "BENIGN", score: 0.01 },
+            { prediction: "MALICIOUS", score: 0.9 },
+            { prediction: "BENIGN", score: 0.02 },
+          ],
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    await expect(fw.classifyBatch(["a", "b"])).rejects.toThrow(
+      /response predictions length 3 does not match submitted texts length 2/,
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    { description: "absent", body: {} },
+    { description: "null", body: { predictions: null } },
+    { description: "an object", body: { predictions: { prediction: "BENIGN" } } },
+  ])("rejects predictions when $description", async ({ body }) => {
+    const { calls } = mockFetch([{ status: 200, body }]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    await expect(fw.classifyBatch(["a"])).rejects.toThrow(
+      /response predictions must be an array/,
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("validates response cardinality against the submitted snapshot", async () => {
+    const { calls } = controlledFetch();
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const texts = ["a", "b"];
+
+    const promise = fw.classifyBatch(texts, { requestId: "snapshot-req" });
+    await flush();
+    expect(calls[0]!.body.texts).toEqual(["a", "b"]);
+
+    texts.pop();
+    calls[0]!.settle(200, {
+      predictions: [
+        { prediction: "BENIGN", score: 0.01 },
+        { prediction: "MALICIOUS", score: 0.9 },
+      ],
+    });
+
+    await expect(promise).resolves.toHaveLength(2);
   });
 
   it("sanitizes lone surrogates before sending batch payloads", async () => {
