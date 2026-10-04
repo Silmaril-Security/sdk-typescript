@@ -433,6 +433,14 @@ export class Firewall {
       }),
     );
     const data = await this.postWithRetry<BatchClassifyResponse>(payload, options.signal);
+    if (!Array.isArray(data.predictions)) {
+      throw new Error("Firewall: response predictions must be an array");
+    }
+    if (data.predictions.length !== payload.texts.length) {
+      throw new Error(
+        `Firewall: response predictions length ${data.predictions.length} does not match submitted texts length ${payload.texts.length}`,
+      );
+    }
     return data.predictions.map((p) => blockResultFromResponse(p, requestedMode));
   }
 
