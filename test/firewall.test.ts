@@ -1433,6 +1433,33 @@ describe("Firewall — cancellation", () => {
     }
   });
 
+  it("clears the attempt timer when caller abort arrives during stalled retry cleanup", async () => {
+    vi.useFakeTimers();
+    let finishCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("throttled", { status: 429 }))
+      .mockResolvedValueOnce(new Response(new ReadableStream({ cancel: () => cleanup }), { status: 429 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    const reason = new Error("caller deadline");
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, timeoutMs: 8000 });
+    const pending = fw.classify("x", { signal: controller.signal });
+    pending.catch(() => {});
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(1);
+      controller.abort(reason);
+      expect(vi.getTimerCount()).toBe(0);
+      finishCleanup();
+      await expect(pending).rejects.toBe(reason);
+    } finally {
+      finishCleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("discards a retried 429 body before backing off and then succeeds", async () => {
     vi.useFakeTimers();
     try {

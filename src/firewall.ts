@@ -22,7 +22,7 @@ import type {
   Prediction,
 } from "./types.js";
 
-export const SDK_VERSION = "0.7.1";
+export const SDK_VERSION = "0.7.2";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
@@ -302,6 +302,9 @@ function createAttemptSignal(timeoutMs: number, callerSignal?: AbortSignal): Att
     );
   }, timeoutMs);
   const onCallerAbort = (): void => {
+    // Body disposal may never settle, so do not wait for finally to release
+    // a timer that could keep a command hook alive beyond the caller deadline.
+    clearTimeout(timer);
     controller.abort(callerSignal?.reason);
   };
   callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
