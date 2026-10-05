@@ -7,6 +7,8 @@ All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 - Clear the attempt timeout immediately on caller cancellation, including when
   retry-response body disposal never settles. This prevents residual timers
   from keeping command-hook processes alive beyond their shared deadline.
+- Make retried-response cleanup respect caller cancellation and attempt timeouts
+  even when a stream cancellation promise never settles.
 
 ## 0.7.1 - 2026-10-04
 

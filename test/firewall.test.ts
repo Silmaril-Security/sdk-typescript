@@ -1433,7 +1433,7 @@ describe("Firewall — cancellation", () => {
     }
   });
 
-  it("clears the attempt timer when caller abort arrives during stalled retry cleanup", async () => {
+  it.each(["caller", "attempt"] as const)("releases stalled retry cleanup on %s cancellation", async (kind) => {
     vi.useFakeTimers();
     let finishCleanup!: () => void;
     const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
@@ -1450,10 +1450,15 @@ describe("Firewall — cancellation", () => {
       await vi.advanceTimersByTimeAsync(1000);
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(vi.getTimerCount()).toBe(1);
-      controller.abort(reason);
+      if (kind === "caller") {
+        controller.abort(reason);
+        await expect(pending).rejects.toBe(reason);
+      } else {
+        await vi.advanceTimersByTimeAsync(8000);
+        await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+        expect(controller.signal.aborted).toBe(false);
+      }
       expect(vi.getTimerCount()).toBe(0);
-      finishCleanup();
-      await expect(pending).rejects.toBe(reason);
     } finally {
       finishCleanup();
       vi.useRealTimers();

@@ -245,7 +245,7 @@ async function readCappedErrorBody(response: Response): Promise<string> {
 }
 
 /** Releases a response we will not read so a retry does not leak its socket. */
-async function discardResponseBody(response: Response): Promise<void> {
+async function releaseDiscardedResponseBody(response: Response): Promise<void> {
   try {
     if (response.body) {
       if (!response.body.locked) {
@@ -256,6 +256,21 @@ async function discardResponseBody(response: Response): Promise<void> {
     await response.text();
   } catch {
     // The discarded body belongs to a response we already decided to retry.
+  }
+}
+
+/** Cleanup must not postpone caller cancellation or an attempt timeout. */
+async function discardResponseBody(response: Response, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([releaseDiscardedResponseBody(response), aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -498,7 +513,7 @@ export class Firewall {
             attemptSignal.signal,
           );
         }
-        await discardResponseBody(response);
+        await discardResponseBody(response, attemptSignal.signal);
       } finally {
         attemptSignal.dispose();
       }
