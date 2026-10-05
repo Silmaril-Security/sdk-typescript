@@ -22,7 +22,7 @@ import type {
   Prediction,
 } from "./types.js";
 
-export const SDK_VERSION = "0.7.1";
+export const SDK_VERSION = "0.7.2";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
@@ -245,7 +245,7 @@ async function readCappedErrorBody(response: Response): Promise<string> {
 }
 
 /** Releases a response we will not read so a retry does not leak its socket. */
-async function discardResponseBody(response: Response): Promise<void> {
+async function releaseDiscardedResponseBody(response: Response): Promise<void> {
   try {
     if (response.body) {
       if (!response.body.locked) {
@@ -256,6 +256,21 @@ async function discardResponseBody(response: Response): Promise<void> {
     await response.text();
   } catch {
     // The discarded body belongs to a response we already decided to retry.
+  }
+}
+
+/** Cleanup must not postpone caller cancellation or an attempt timeout. */
+async function discardResponseBody(response: Response, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([releaseDiscardedResponseBody(response), aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -302,6 +317,9 @@ function createAttemptSignal(timeoutMs: number, callerSignal?: AbortSignal): Att
     );
   }, timeoutMs);
   const onCallerAbort = (): void => {
+    // Body disposal may never settle, so do not wait for finally to release
+    // a timer that could keep a command hook alive beyond the caller deadline.
+    clearTimeout(timer);
     controller.abort(callerSignal?.reason);
   };
   callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
@@ -495,7 +513,7 @@ export class Firewall {
             attemptSignal.signal,
           );
         }
-        await discardResponseBody(response);
+        await discardResponseBody(response, attemptSignal.signal);
       } finally {
         attemptSignal.dispose();
       }

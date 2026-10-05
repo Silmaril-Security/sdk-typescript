@@ -1433,6 +1433,38 @@ describe("Firewall — cancellation", () => {
     }
   });
 
+  it.each(["caller", "attempt"] as const)("releases stalled retry cleanup on %s cancellation", async (kind) => {
+    vi.useFakeTimers();
+    let finishCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("throttled", { status: 429 }))
+      .mockResolvedValueOnce(new Response(new ReadableStream({ cancel: () => cleanup }), { status: 429 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    const reason = new Error("caller deadline");
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL, timeoutMs: 8000 });
+    const pending = fw.classify("x", { signal: controller.signal });
+    pending.catch(() => {});
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(1);
+      if (kind === "caller") {
+        controller.abort(reason);
+        await expect(pending).rejects.toBe(reason);
+      } else {
+        await vi.advanceTimersByTimeAsync(8000);
+        await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+        expect(controller.signal.aborted).toBe(false);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      finishCleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("discards a retried 429 body before backing off and then succeeds", async () => {
     vi.useFakeTimers();
     try {
