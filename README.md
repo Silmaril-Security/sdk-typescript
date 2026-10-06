@@ -383,7 +383,14 @@ responses without governance remain valid.
 
 ## Errors
 
-- `SilmarilApiError`: thrown when the firewall API responds with a non-2xx or redirect status. Carries `status`, `statusText`, a 64 KiB-capped `body`, and any parsed malformed-input diagnostics. The default error message omits the body to keep logs clean.
+- `SilmarilApiError`: thrown when native `fetch` returns a non-2xx response to
+  the SDK. Carries `status`, `statusText`, a 64 KiB-capped `body`, and any
+  parsed malformed-input diagnostics. The default error message omits the body
+  to keep logs clean.
+- Native `fetch` transport failures are propagated unchanged as `TypeError`,
+  including redirects refused by the SDK's `redirect: "error"` policy. A
+  refused redirect does not expose a reliable redirect status to JavaScript,
+  particularly in browsers, so it is not reported as `SilmarilApiError`.
 - `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters when a malicious or governance-block decision has effective Block mode. The message distinguishes governance-policy denials from threat-score denials. Carries `score`, `threshold`, `promptText`, and optional `runId`, `hook`, `toolName`, `toolCallId`, and `result`.
 
 `PromptBlockedException` remains as a deprecated alias of
@@ -586,9 +593,10 @@ emitted streaming text cannot be recalled.
 HTTP 429 responses are retried with exponential backoff capped at 30s, up to 5
 times. The retried response body is discarded before the wait, and each request
 payload is serialized once so every attempt sends the same logical event.
-Redirects are rejected rather than followed. Other non-2xx responses are
-surfaced as `SilmarilApiError`, and transport, timeout, or cancellation failures
-are surfaced unchanged.
+Redirects are rejected rather than followed; native `fetch` surfaces that
+refusal as a `TypeError` without a reliable redirect status. Actually received
+non-2xx responses are surfaced as `SilmarilApiError`, and transport, timeout,
+or cancellation failures are surfaced unchanged.
 
 ## Development
 

@@ -1,6 +1,8 @@
 // Copyright (c) 2024-2025 Silmaril Security Inc. All rights reserved.
 
 import { readFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { Socket } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -14,6 +16,7 @@ import { SDK_VERSION } from "../src/firewall.js";
 
 const TEST_API_URL = "https://api.test.invalid/classify";
 const ERROR_BODY_CAP = 1 << 16;
+const NATIVE_FETCH = globalThis.fetch;
 
 interface MockCall {
   url: string;
@@ -76,6 +79,52 @@ function silmarilMetadata(requestId: string, inputIndex?: number): Record<string
     request_id: requestId,
     ...(inputIndex === undefined ? {} : { input_index: inputIndex }),
   };
+}
+
+async function listenOnLoopback(server: Server): Promise<string> {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error): void => {
+      reject(error);
+    };
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("Expected a loopback TCP address");
+  }
+  return `http://127.0.0.1:${address.port}`;
+}
+
+function trackServerSockets(server: Server): Set<Socket> {
+  const sockets = new Set<Socket>();
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  return sockets;
+}
+
+async function closeLoopbackServer(server: Server, sockets: Set<Socket>): Promise<void> {
+  const closed = server.listening
+    ? new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      })
+    : Promise.resolve();
+  server.closeAllConnections();
+  for (const socket of sockets) {
+    socket.destroy();
+  }
+  await closed;
 }
 
 describe("SDK release metadata", () => {
@@ -1013,8 +1062,11 @@ describe("Firewall — error handling", () => {
     expect(err.message).not.toContain("bad key");
   });
 
-  it("wraps redirect responses into SilmarilApiError", async () => {
-    const { calls } = mockFetch([{ status: 302, body: "redirect" }]);
+  it("propagates fetch redirect rejections unchanged", async () => {
+    const redirectError = new TypeError("fetch failed");
+    globalThis.fetch = (async () => {
+      throw redirectError;
+    }) as unknown as typeof fetch;
     const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
     let caught: unknown;
     try {
@@ -1022,11 +1074,82 @@ describe("Firewall — error handling", () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(SilmarilApiError);
-    const err = caught as SilmarilApiError;
-    expect(calls[0]!.init.redirect).toBe("error");
-    expect(err.status).toBe(302);
-    expect(err.body).toBe("redirect");
+    expect(caught).toBe(redirectError);
+    expect(caught).toBeInstanceOf(TypeError);
+  });
+
+  it("native fetch refuses redirects without forwarding credentials or payload", async () => {
+    interface ReceivedRequest {
+      apiKey: string | string[] | undefined;
+      body: string;
+    }
+
+    const sourceRequests: ReceivedRequest[] = [];
+    const targetRequests: ReceivedRequest[] = [];
+    let targetUrl = "";
+    const target = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        targetRequests.push({
+          apiKey: request.headers["x-api-key"],
+          body,
+        });
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"prediction":"BENIGN","score":0,"threshold":0.5}');
+      });
+    });
+    const source = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        sourceRequests.push({
+          apiKey: request.headers["x-api-key"],
+          body,
+        });
+        response.writeHead(302, { location: `${targetUrl}/classify` });
+        response.end("redirect");
+      });
+    });
+    const sourceSockets = trackServerSockets(source);
+    const targetSockets = trackServerSockets(target);
+
+    try {
+      targetUrl = await listenOnLoopback(target);
+      const sourceUrl = await listenOnLoopback(source);
+      globalThis.fetch = NATIVE_FETCH;
+      const fw = new Firewall({
+        apiKey: "sk-redirect-test-only",
+        apiUrl: `${sourceUrl}/classify`,
+      });
+
+      await expect(
+        fw.classify("redirect probe", { requestId: "req-redirect-loopback" }),
+      ).rejects.toBeInstanceOf(TypeError);
+
+      expect(sourceRequests).toHaveLength(1);
+      expect(sourceRequests[0]!.apiKey).toBe("sk-redirect-test-only");
+      expect(JSON.parse(sourceRequests[0]!.body)).toMatchObject({
+        text: "redirect probe",
+        metadata: {
+          silmaril: {
+            request_id: "req-redirect-loopback",
+          },
+        },
+      });
+      expect(targetRequests).toEqual([]);
+    } finally {
+      await Promise.all([
+        closeLoopbackServer(source, sourceSockets),
+        closeLoopbackServer(target, targetSockets),
+      ]);
+    }
   });
 
   it("caps API error bodies and keeps them out of the default message", async () => {
