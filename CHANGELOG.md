@@ -2,6 +2,13 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.7.3 - 2026-10-07
+
+- Honor effective Warn and Shadow modes when applying the Deep Agents
+  repeated-denial cap, including after genuine denial messages are reconstructed.
+- Correct the README to document native redirect refusals as `TypeError`
+  transport failures rather than `SilmarilApiError` responses.
+
 ## 0.7.2 - 2026-10-05
 
 - Clear the attempt timeout immediately on caller cancellation, including when

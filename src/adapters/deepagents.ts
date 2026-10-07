@@ -115,9 +115,9 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         ? await classify(textOf(latestUser), HookLabel.USER_INPUT)
         : undefined;
       if (inputDecision?.enforce) return new AIMessage(SAFE_OUTPUT_MESSAGE);
-      // The marker is added only after a Block decision, so neither an
-      // unrelated input mode nor tool output that quotes the safe text affects the cap.
-      if (blockedCount >= maxBlockedAttempts) {
+      const capMode = effectiveMode ?? inputDecision?.mode ?? "block";
+      // Only genuine prior Block markers count, and the terminal cap requires current effective Block mode.
+      if (blockedCount >= maxBlockedAttempts && capMode === "block") {
         return new AIMessage(SAFE_FINAL_MESSAGE);
       }
       const response = await handler(request);
