@@ -34,10 +34,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-For reproducible installs, pin a tagged release:
+For reproducible installs, pin the current tagged release:
 
 ```sh
-npm install @silmaril-security/sdk@0.7.2
+npm install @silmaril-security/sdk@0.7.3
 ```
 
 Requires Node 20 or later.
