@@ -2,6 +2,11 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.7.4 - 2026-10-09
+
+- Ship the corrected README with its reproducible install command pinned to
+  `0.7.4`; the immutable npm `0.7.3` artifact retained the previous release pin.
+
 ## 0.7.3 - 2026-10-07
 
 - Honor effective Warn and Shadow modes when applying the Deep Agents
