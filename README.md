@@ -18,8 +18,8 @@ This SDK provides the low-level TypeScript interface for that workflow:
 - Classify user input, tool calls, tool responses, model output, or system
   prompt content.
 - Preserve hook and tool-name context for more accurate decisions.
-- Honor backend threat and governance decisions and effective Shadow, Warn, or
-  Block behavior in adapters.
+- Honor backend threat and governance decisions while adapters apply their
+  effective Shadow, Warn, or Block behavior.
 - Send each complete sanitized event in one request.
 - On individual `classify()` calls, preserve exact `metadata.conversationId` as sequence identity and add one event ID.
 - Retry API rate-limit responses.
@@ -241,7 +241,7 @@ interface FirewallOptions {
   apiKey: string;                                     // required
   apiUrl: string;                                     // required
   timeoutMs?: number;                                 // default: 10000 ms, max 2147483647
-  mode?: "shadow" | "warn" | "block";                // omitted uses backend configuration
+  mode?: "shadow" | "warn" | "block";                // explicit local client default
   shadowMode?: boolean;                               // deprecated legacy mapping
 }
 ```
@@ -265,15 +265,29 @@ threshold.
 
 ## Modes
 
-Use `shadow`, `warn`, or `block` only when a request needs to override the
-backend-configured mode. Shadow and Warn preserve the framework flow; Block
-throws `FirewallBlockedException` for a malicious decision. Current backends
-return the effective mode on every result.
+Mode controls local SDK and adapter handling; the backend remains authoritative
+for threat decisions and thresholds. Explicitly set `mode: "shadow"` or
+`mode: "warn"` when you want observation without adapter enforcement. Set
+`mode: "block"` when you want Block handling.
 
-During a rolling upgrade, an explicit request mode remains authoritative if a
-legacy or mixed-version backend omits or disagrees about `mode`. When both the
-request and response omit it, `BlockResult.mode` remains unset; adapters retain
-their pre-0.6 default behavior without falsely reporting a backend Block mode.
+A per-call or per-adapter mode takes precedence over the client mode. Any
+explicit mode is locally authoritative even when the response omits `mode` or
+reports a conflicting value. If no explicit mode is requested, a future
+compatible service can supply the result mode. This is forward compatibility,
+not a statement that current Firewall services return mode.
+
+Current Gateway responses omit `mode`, as do the current Python and Rust
+classify wire contracts; callers cannot currently rely on backend mode
+configuration. When a TypeScript request and response both omit mode, direct
+`classify()` and `classifyBatch()` calls return the backend decision without
+enforcing it, and `BlockResult.mode` remains unset. The Vercel middleware and
+LangChain handler each apply their existing Block fallback to a successful
+mode-less malicious or governance-block decision and throw
+`FirewallBlockedException`. Deep Agents applies its existing Block fallback to
+a successful mode-less decision through its safe replacement and blocked-attempt
+behavior; classification errors remain fail-open by default. In the Python and
+Go SDKs, direct calls retain their existing Block enforcement when both the
+request and response omit mode.
 
 ```ts
 import { wrapLanguageModel, generateText } from "ai";
