@@ -281,13 +281,15 @@ classify wire contracts; callers cannot currently rely on backend mode
 configuration. When a TypeScript request and response both omit mode, direct
 `classify()` and `classifyBatch()` calls return the backend decision without
 enforcing it, and `BlockResult.mode` remains unset. The Vercel middleware and
-LangChain handler each apply their existing Block fallback to a successful
-mode-less malicious or governance-block decision and throw
-`FirewallBlockedException`. Deep Agents applies its existing Block fallback to
-a successful mode-less decision through its safe replacement and blocked-attempt
-behavior; classification errors remain fail-open by default. In the Python and
-Go SDKs, direct calls retain their existing Block enforcement when both the
-request and response omit mode.
+LangChain handler retain their existing Block fallback for successful mode-less
+malicious or governance-block decisions. LangChain, Vercel input scanning, and
+Vercel non-streamed output scanning throw `FirewallBlockedException`; Vercel
+streamed-output scanning instead emits an error part carrying that exception in
+the stream. Deep Agents applies its existing Block fallback to a successful
+mode-less decision through its safe replacement and blocked-attempt behavior;
+classification errors remain fail-open by default. In the Python and Go SDKs,
+direct calls retain their existing Block enforcement when both the request and
+response omit mode.
 
 ```ts
 import { wrapLanguageModel, generateText } from "ai";
