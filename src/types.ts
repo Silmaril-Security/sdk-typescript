@@ -37,7 +37,7 @@ export interface BlockResult {
   readonly prediction: Prediction;
   readonly score: number;
   readonly threshold: number;
-  /** Omitted only when a legacy backend did not return mode and no override was requested. */
+  /** Omitted when neither an explicit local override nor the response supplies a mode. */
   readonly mode?: FirewallMode;
   readonly primaryOutcome?: PrimaryOutcome;
   readonly outcomeScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
@@ -50,6 +50,7 @@ export interface FirewallOptions {
   apiKey: string;
   apiUrl: string;
   timeoutMs?: number;
+  /** Explicit local client default; a per-call or per-adapter mode takes precedence. */
   mode?: FirewallMode;
   /** @deprecated Use mode: "shadow" or mode: "block". */
   shadowMode?: boolean;
@@ -58,6 +59,7 @@ export interface FirewallOptions {
 export type ClassificationMetadata = Readonly<Record<string, unknown>>;
 
 export interface ClassifyOptions {
+  /** Explicit local per-call override; authoritative over any response mode. */
   mode?: FirewallMode;
   hook?: HookLabel;
   toolName?: string;
@@ -72,6 +74,7 @@ export interface ClassifyOptions {
 }
 
 export interface ClassifyBatchOptions {
+  /** Explicit local per-call override; authoritative over every response mode. */
   mode?: FirewallMode;
   hooks?: readonly HookLabel[];
   toolNames?: readonly (string | undefined)[];
@@ -93,6 +96,7 @@ export interface LangChainAdapterOptions {
   includeTool?: boolean;
   failOpen?: boolean;
   logger?: (message: string, error: unknown) => void;
+  /** Explicit local adapter override; takes precedence over the client and response modes. */
   mode?: FirewallMode;
   /** @deprecated Use mode: "shadow" or mode: "block". */
   shadowMode?: boolean;
@@ -128,6 +132,7 @@ export interface MiddlewareOptions {
   scanInput?: boolean;
   scanOutput?: boolean;
   scanToolCalls?: boolean;
+  /** Explicit local adapter override; takes precedence over the client and response modes. */
   mode?: FirewallMode;
   /** @deprecated Use mode: "shadow" or mode: "block". */
   shadowMode?: boolean;
