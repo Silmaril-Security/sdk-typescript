@@ -2,6 +2,14 @@
 
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
+## 0.7.5 - 2026-10-12
+
+- Correct the mode documentation for current mode-less Gateway responses and
+  Python/Rust wire contracts: explicit local client, call, and adapter overrides
+  remain authoritative. With no request or response mode, direct TypeScript
+  calls return decisions without local enforcement while the Vercel, LangChain,
+  and Deep Agents adapters retain their existing Block fallback behavior.
+
 ## 0.7.4 - 2026-10-09
 
 - Ship the corrected README with its reproducible install command pinned to
