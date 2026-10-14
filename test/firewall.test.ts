@@ -356,7 +356,7 @@ describe("Firewall.classify", () => {
     });
   });
 
-  it("serializes governance context under existing Silmaril metadata", async () => {
+  it("serializes governance resources for the runtime and preserves attribution metadata", async () => {
     const { calls } = mockFetch([
       {
         status: 200,
@@ -385,6 +385,7 @@ describe("Firewall.classify", () => {
     expect(calls[0]!.body).toEqual({
       text: "create issue",
       tool_name: "create_issue",
+      resource: { kind: "mcp_tool", id: "create_issue", parent_id: "github" },
       metadata: {
         run_id: "run-123",
         silmaril: {
@@ -820,6 +821,7 @@ describe("Firewall.classifyBatch", () => {
 
     expect(calls[0]!.body).toEqual({
       texts: ["a", "b"],
+      resources: [{ kind: "tool", id: "shell" }, { kind: "mcp_server", id: "github" }],
       metadata: [
         {
           silmaril: {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.6
+
+- Send typed governance resources in the runtime's top-level `resource` and
+  aligned `resources` fields, preserving compatibility attribution metadata.
+- Reject invalid canonical resource references before submitting a request.
+  Caller-supplied agent metadata remains attribution, not authenticated identity.
+
 All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 
 ## 0.7.5 - 2026-10-12

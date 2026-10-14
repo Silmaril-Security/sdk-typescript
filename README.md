@@ -34,10 +34,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-For reproducible installs, pin the current tagged release:
+After publication, pin version 0.7.6 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.7.5
+npm install @silmaril-security/sdk@0.7.6
 ```
 
 Requires Node 20 or later.
@@ -637,3 +637,15 @@ npm publish --access public
 
 This SDK is distributed under the license terms in [LICENSE](LICENSE). It is not
 permissive open source.
+
+## Governance resource requests
+
+Typed governance resources are sent in the classify request's top-level
+`resource` field or aligned nullable `resources` array for batch calls. Resource
+IDs must be non-empty; MCP tools also require their canonical server parent ID.
+The compatibility metadata copy remains attribution only. Caller agent metadata
+does not supply an authenticated principal.
+
+This source prepares version 0.7.6. Its registry install command becomes
+available after the authorized main-branch release workflow publishes the package.
+Confirm registry publication before installing this version.
