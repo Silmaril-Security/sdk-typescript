@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.6
 
 - Send typed governance resources in the runtime's top-level `resource` and
   aligned `resources` fields, preserving compatibility attribution metadata.
