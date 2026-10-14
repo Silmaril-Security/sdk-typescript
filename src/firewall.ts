@@ -22,7 +22,7 @@ import type {
   Prediction,
 } from "./types.js";
 
-export const SDK_VERSION = "0.7.5";
+export const SDK_VERSION = "0.7.6";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
@@ -40,6 +40,7 @@ interface SingleClassifyPayload {
   hook?: string;
   tool_name?: string;
   metadata?: ClassificationMetadata;
+  resource?: Record<string, string>;
 }
 
 interface BatchClassifyPayload {
@@ -48,6 +49,7 @@ interface BatchClassifyPayload {
   hooks?: readonly string[];
   tool_names?: readonly (string | null)[];
   metadata?: readonly (ClassificationMetadata | null)[];
+  resources?: readonly (Record<string, string> | null)[];
 }
 
 interface SingleClassifyResponse {
@@ -167,19 +169,34 @@ function withSdkMetadata(
   return payload;
 }
 
+function governanceResourceToWire(resource: NonNullable<GovernanceContext["resource"]>): Record<string, string> {
+  if (!["agent", "tool", "mcp_server", "mcp_tool", "plugin", "skill", "extension"].includes(resource.kind)) {
+    throw new Error("Firewall: invalid governance resource kind");
+  }
+  if (typeof resource.id !== "string" || !resource.id.trim()) {
+    throw new Error("Firewall: governance resource id must be a non-empty string");
+  }
+  if (resource.kind === "mcp_tool") {
+    if (typeof resource.parentId !== "string" || !resource.parentId.trim()) {
+      throw new Error("Firewall: mcp_tool resource requires a non-empty parentId");
+    }
+  } else if (resource.parentId !== undefined) {
+    throw new Error("Firewall: parentId is valid only for mcp_tool resources");
+  }
+  return {
+    kind: resource.kind,
+    id: resource.id,
+    ...(resource.parentId === undefined ? {} : { parent_id: resource.parentId }),
+  };
+}
+
 function governanceContextToWire(context: GovernanceContext): Record<string, unknown> {
   return {
     ...(context.agent === undefined ? {} : { agent: context.agent }),
     ...(context.resource === undefined
       ? {}
       : {
-          resource: {
-            kind: context.resource.kind,
-            ...(context.resource.id === undefined ? {} : { id: context.resource.id }),
-            ...(context.resource.parentId === undefined
-              ? {}
-              : { parent_id: context.resource.parentId }),
-          },
+          resource: governanceResourceToWire(context.resource),
         }),
   };
 }
@@ -450,6 +467,11 @@ export class Firewall {
           : { governance: options.governance[index] }),
       }),
     );
+    if (options.governance !== undefined) {
+      payload.resources = options.governance.map((context) =>
+        context?.resource === undefined ? null : governanceResourceToWire(context.resource),
+      );
+    }
     const data = await this.postWithRetry<BatchClassifyResponse>(payload, options.signal);
     if (!Array.isArray(data.predictions)) {
       throw new Error("Firewall: response predictions must be an array");
@@ -539,6 +561,9 @@ export class Firewall {
     }
     if (options.toolName !== undefined) {
       payload.tool_name = options.toolName;
+    }
+    if (options.governance?.resource !== undefined) {
+      payload.resource = governanceResourceToWire(options.governance.resource);
     }
     payload.metadata = withSdkMetadata(options.metadata, {
       ...metadataInfo,

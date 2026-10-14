@@ -1,6 +1,6 @@
 {
   "name": "@silmaril-security/sdk",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "TypeScript SDK for Silmaril Firewall \u2014 prompt injection and jailbreak detection",
   "license": "SEE LICENSE IN LICENSE",
   "author": "Silmaril Security Inc.",
