@@ -16,11 +16,17 @@ export type GovernanceResourceKind =
   | "skill"
   | "extension";
 
-export interface GovernanceResource {
-  readonly kind: GovernanceResourceKind;
-  readonly id?: string;
-  readonly parentId?: string;
-}
+export type GovernanceResource =
+  | {
+      readonly kind: "mcp_tool";
+      readonly id: string;
+      readonly parentId: string;
+    }
+  | {
+      readonly kind: Exclude<GovernanceResourceKind, "mcp_tool">;
+      readonly id: string;
+      readonly parentId?: never;
+    };
 
 export interface GovernanceContext {
   readonly agent?: string;
