@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Preserve optional governance response evidence for the canonical resource,
+  identity revision, and open-ended decision reason when supplied by the
+  serving runtime.
+
 ## 0.7.6
 
 - Send typed governance resources in the runtime's top-level `resource` and

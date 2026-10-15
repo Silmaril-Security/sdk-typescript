@@ -16,6 +16,7 @@ import type {
   FirewallMode,
   GovernanceContext,
   GovernanceDecision,
+  GovernanceResource,
   LangChainAdapterOptions,
   LangChainFirewallHandler,
   MiddlewareOptions,
@@ -133,7 +134,7 @@ function blockResultFromResponse(
       result.detectorCounts = detectorCounts;
     }
   }
-  if (data.governance !== undefined) {
+  if (data.governance !== undefined && data.governance !== null) {
     result.governance = governanceDecisionFromResponse(data.governance);
   }
   return Object.freeze(result);
@@ -169,8 +170,23 @@ function withSdkMetadata(
   return payload;
 }
 
+const GOVERNANCE_RESOURCE_KINDS = [
+  "agent",
+  "tool",
+  "mcp_server",
+  "mcp_tool",
+  "plugin",
+  "skill",
+  "extension",
+] as const;
+
+function isGovernanceResourceKind(value: unknown): value is GovernanceResource["kind"] {
+  return typeof value === "string"
+    && (GOVERNANCE_RESOURCE_KINDS as readonly string[]).includes(value);
+}
+
 function governanceResourceToWire(resource: NonNullable<GovernanceContext["resource"]>): Record<string, string> {
-  if (!["agent", "tool", "mcp_server", "mcp_tool", "plugin", "skill", "extension"].includes(resource.kind)) {
+  if (!isGovernanceResourceKind(resource.kind)) {
     throw new Error("Firewall: invalid governance resource kind");
   }
   if (typeof resource.id !== "string" || !resource.id.trim()) {
@@ -188,6 +204,39 @@ function governanceResourceToWire(resource: NonNullable<GovernanceContext["resou
     id: resource.id,
     ...(resource.parentId === undefined ? {} : { parent_id: resource.parentId }),
   };
+}
+
+function governanceResourceFromResponse(value: unknown): GovernanceResource {
+  if (!isRecord(value)) {
+    throw new Error("Firewall: response governance resource must be an object");
+  }
+  if (!isGovernanceResourceKind(value.kind)) {
+    throw new Error("Firewall: response governance resource has an invalid kind");
+  }
+  if (typeof value.id !== "string" || !value.id.trim()) {
+    throw new Error("Firewall: response governance resource id must be a non-empty string");
+  }
+  if (value.kind === "mcp_tool") {
+    if (typeof value.parent_id !== "string" || !value.parent_id.trim()) {
+      throw new Error(
+        "Firewall: response governance mcp_tool resource requires a non-empty parent_id",
+      );
+    }
+    return Object.freeze({
+      kind: value.kind,
+      id: value.id,
+      parentId: value.parent_id,
+    });
+  }
+  if (value.parent_id !== undefined && value.parent_id !== null) {
+    throw new Error(
+      "Firewall: response governance parent_id is valid only for mcp_tool resources",
+    );
+  }
+  return Object.freeze({
+    kind: value.kind,
+    id: value.id,
+  });
 }
 
 function governanceContextToWire(context: GovernanceContext): Record<string, unknown> {
@@ -211,13 +260,33 @@ function governanceDecisionFromResponse(value: unknown): GovernanceDecision {
   if (typeof value.policy_version !== "string" || value.policy_version.length === 0) {
     throw new Error("Firewall: response governance policy_version must be a non-empty string");
   }
-  if (value.rule_id !== undefined && typeof value.rule_id !== "string") {
+  if (value.rule_id !== undefined && value.rule_id !== null && typeof value.rule_id !== "string") {
     throw new Error("Firewall: response governance rule_id must be a string when provided");
   }
+  if (
+    value.identity_revision !== undefined
+    && value.identity_revision !== null
+    && typeof value.identity_revision !== "string"
+  ) {
+    throw new Error(
+      "Firewall: response governance identity_revision must be a string when provided",
+    );
+  }
+  if (value.reason !== undefined && value.reason !== null && typeof value.reason !== "string") {
+    throw new Error("Firewall: response governance reason must be a string when provided");
+  }
+  const resource = value.resource === undefined || value.resource === null
+    ? undefined
+    : governanceResourceFromResponse(value.resource);
   return Object.freeze({
     action: value.action,
-    ...(value.rule_id === undefined ? {} : { ruleId: value.rule_id }),
+    ...(value.rule_id === undefined || value.rule_id === null ? {} : { ruleId: value.rule_id }),
     policyVersion: value.policy_version,
+    ...(resource === undefined ? {} : { resource }),
+    ...(value.identity_revision === undefined || value.identity_revision === null
+      ? {}
+      : { identityRevision: value.identity_revision }),
+    ...(value.reason === undefined || value.reason === null ? {} : { reason: value.reason }),
   });
 }
 
