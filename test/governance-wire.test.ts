@@ -123,6 +123,72 @@ describe("governance response evidence", () => {
       }
     }
   });
+
+  describe.each(["classify", "classifyBatch"] as const)(
+    "malformed evidence through %s",
+    (method) => {
+      it.each([
+        {
+          name: "an unknown resource kind",
+          evidence: { resource: { kind: "future_kind", id: "resource-1" } },
+          error: /resource has an invalid kind/,
+        },
+        {
+          name: "an MCP tool without a parent",
+          evidence: { resource: { kind: "mcp_tool", id: "tool-1" } },
+          error: /mcp_tool resource requires a non-empty parent_id/,
+        },
+        {
+          name: "a resource without an id",
+          evidence: { resource: { kind: "plugin" } },
+          error: /resource id must be a non-empty string/,
+        },
+        {
+          name: "a resource with a blank id",
+          evidence: { resource: { kind: "plugin", id: " " } },
+          error: /resource id must be a non-empty string/,
+        },
+        {
+          name: "a non-string identity revision",
+          evidence: { identity_revision: 42 },
+          error: /identity_revision must be a string when provided/,
+        },
+        {
+          name: "a non-string reason",
+          evidence: { reason: ["identity_unresolved"] },
+          error: /reason must be a string when provided/,
+        },
+      ])("rejects $name", async ({ evidence, error }) => {
+        const prediction = {
+          prediction: "BENIGN",
+          score: 0.1,
+          threshold: 0.5,
+          governance: {
+            action: "block",
+            policy_version: "policy-v6",
+            ...evidence,
+          },
+        };
+        const fetch = vi.fn(async () =>
+          new Response(JSON.stringify(
+            method === "classify" ? prediction : { predictions: [prediction] },
+          )),
+        );
+        globalThis.fetch = fetch;
+        const fw = new Firewall({
+          apiKey: "sk-test",
+          apiUrl: "https://example.com/classify",
+        });
+
+        const classification = method === "classify"
+          ? fw.classify("synthetic")
+          : fw.classifyBatch(["synthetic"]);
+
+        await expect(classification).rejects.toThrow(error);
+        expect(fetch).toHaveBeenCalledOnce();
+      });
+    },
+  );
 });
 
 it("sends the resource read by policy while leaving caller identity in metadata", async () => {
