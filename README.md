@@ -397,6 +397,13 @@ returns the server action, policy version, and optional rule ID. A malicious
 prediction or explicit governance block is blocked in Block mode; legacy
 responses without governance remain valid.
 
+When supported by the serving runtime, `BlockResult.governance` can also
+include optional decision evidence: the canonical `resource` (`kind`, `id`,
+and `parentId` for MCP tools), `identityRevision`, and `reason`. Older runtimes
+may omit these fields, and reason strings are open-ended so callers should
+preserve unknown values. This response evidence does not establish request
+identity and does not change enforcement behavior.
+
 ## Errors
 
 - `SilmarilApiError`: thrown when native `fetch` returns a non-2xx response to

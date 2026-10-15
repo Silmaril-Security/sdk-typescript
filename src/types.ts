@@ -37,6 +37,9 @@ export interface GovernanceDecision {
   readonly action: GovernanceAction;
   readonly ruleId?: string;
   readonly policyVersion: string;
+  readonly resource?: GovernanceResource;
+  readonly identityRevision?: string;
+  readonly reason?: string;
 }
 
 export interface BlockResult {
