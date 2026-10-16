@@ -34,10 +34,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-After publication, pin version 0.7.6 for reproducible installs:
+After publication, pin version 0.7.7 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.7.6
+npm install @silmaril-security/sdk@0.7.7
 ```
 
 Requires Node 20 or later.
@@ -653,6 +653,6 @@ IDs must be non-empty; MCP tools also require their canonical server parent ID.
 The compatibility metadata copy remains attribution only. Caller agent metadata
 does not supply an authenticated principal.
 
-This source prepares version 0.7.6. Its registry install command becomes
+This source prepares version 0.7.7. Its registry install command becomes
 available after the authorized main-branch release workflow publishes the package.
 Confirm registry publication before installing this version.
