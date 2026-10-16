@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.7
+
 - Preserve optional governance response evidence for the canonical resource,
   identity revision, and open-ended decision reason when supplied by the
   serving runtime.
