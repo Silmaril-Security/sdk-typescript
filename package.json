@@ -89,6 +89,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test",
     "test": "vitest run",
+    "test:package": "node scripts/test-review-package.mjs",
     "test:watch": "vitest"
   },
   "peerDependencies": {

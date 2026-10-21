@@ -10,6 +10,7 @@ import {
 } from "../src/index.js";
 import { createDeepAgentsMiddleware } from "../src/adapters/deepagents.js";
 import { createLangChainHandler } from "../src/adapters/langchain.js";
+import { isReviewCompatibilityError } from "../src/exceptions.js";
 
 const TEST_API_URL = "https://api.test.invalid/classify";
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -52,6 +53,40 @@ function single(review?: ReviewLevel): Record<string, unknown> {
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
   vi.useRealTimers();
+});
+
+describe("review compatibility error branding", () => {
+  it("preserves local instanceof behavior and recognizes a separately constructed brand", () => {
+    const local = new ReviewCompatibilityError("deep", undefined);
+    expect(local).toBeInstanceOf(ReviewCompatibilityError);
+    expect(isReviewCompatibilityError(local)).toBe(true);
+
+    class SeparatelyBundledReviewCompatibilityError extends Error {
+      readonly requestedReview = "deep";
+      readonly acknowledgedReview = undefined;
+
+      constructor() {
+        super("separately bundled review compatibility error");
+        this.name = "ReviewCompatibilityError";
+        Object.defineProperty(
+          this,
+          Symbol.for("@silmaril-security/sdk/ReviewCompatibilityError"),
+          { value: true },
+        );
+      }
+    }
+
+    const separate = new SeparatelyBundledReviewCompatibilityError();
+    expect(separate).not.toBeInstanceOf(ReviewCompatibilityError);
+    expect(isReviewCompatibilityError(separate)).toBe(true);
+  });
+
+  it("does not trust an ordinary error with the same name", () => {
+    const unrelated = new Error("unrelated");
+    unrelated.name = "ReviewCompatibilityError";
+
+    expect(isReviewCompatibilityError(unrelated)).toBe(false);
+  });
 });
 
 describe("review selection", () => {

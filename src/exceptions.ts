@@ -77,6 +77,10 @@ export const PromptBlockedException = FirewallBlockedException;
 /** @deprecated Use FirewallBlockedException instead. */
 export type PromptBlockedException = FirewallBlockedException;
 
+const REVIEW_COMPATIBILITY_ERROR_BRAND = Symbol.for(
+  "@silmaril-security/sdk/ReviewCompatibilityError",
+);
+
 export class ReviewCompatibilityError extends Error {
   readonly requestedReview: ReviewLevel;
   readonly acknowledgedReview: unknown;
@@ -89,7 +93,27 @@ export class ReviewCompatibilityError extends Error {
     this.name = "ReviewCompatibilityError";
     this.requestedReview = requestedReview;
     this.acknowledgedReview = acknowledgedReview;
+    Object.defineProperty(this, REVIEW_COMPATIBILITY_ERROR_BRAND, {
+      value: true,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
     Object.setPrototypeOf(this, ReviewCompatibilityError.prototype);
+  }
+}
+
+export function isReviewCompatibilityError(error: unknown): error is ReviewCompatibilityError {
+  if ((typeof error !== "object" && typeof error !== "function") || error === null) {
+    return false;
+  }
+  try {
+    return Object.getOwnPropertyDescriptor(
+      error,
+      REVIEW_COMPATIBILITY_ERROR_BRAND,
+    )?.value === true;
+  } catch {
+    return false;
   }
 }
 
