@@ -34,10 +34,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-After publication, pin version 0.7.7 for reproducible installs:
+After publication, pin version 0.7.8 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.7.7
+npm install @silmaril-security/sdk@0.7.8
 ```
 
 Requires Node 20 or later.
@@ -130,8 +130,8 @@ threshold.
 
 ## Review Levels
 
-Review selection is source-prepared and unreleased. Deploy compatible backend
-support before using an explicit selection; the package version is unchanged.
+Review selection is available starting with TypeScript SDK 0.7.8. Deploy
+compatible Firewall support before using an explicit selection.
 
 Omit `review` to inherit the selected tenant/surface AppConfig
 `threat_judge.enabled` value without
@@ -702,6 +702,6 @@ IDs must be non-empty; MCP tools also require their canonical server parent ID.
 The compatibility metadata copy remains attribution only. Caller agent metadata
 does not supply an authenticated principal.
 
-This source prepares version 0.7.7. Its registry install command becomes
+This source prepares version 0.7.8. Its registry install command becomes
 available after the authorized main-branch release workflow publishes the package.
 Confirm registry publication before installing this version.

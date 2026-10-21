@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.8
 
 - Add explicit `standard` and `deep` review selection for clients and individual
   classify calls, with per-call precedence and legacy omission behavior.
