@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
-import { SilmarilApiError } from "./exceptions.js";
+import { ReviewCompatibilityError, SilmarilApiError } from "./exceptions.js";
 import { normalizeHarmfulOutcomeMap, normalizePrimaryOutcome } from "./outcomes.js";
 import { sanitizeText } from "./sanitization.js";
 import type {
@@ -21,6 +21,7 @@ import type {
   LangChainFirewallHandler,
   MiddlewareOptions,
   Prediction,
+  ReviewLevel,
 } from "./types.js";
 
 export const SDK_VERSION = "0.7.7";
@@ -38,6 +39,7 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 interface SingleClassifyPayload {
   text: string;
   mode?: FirewallMode;
+  review?: ReviewLevel;
   hook?: string;
   tool_name?: string;
   metadata?: ClassificationMetadata;
@@ -47,6 +49,7 @@ interface SingleClassifyPayload {
 interface BatchClassifyPayload {
   texts: readonly string[];
   mode?: FirewallMode;
+  review?: ReviewLevel;
   hooks?: readonly string[];
   tool_names?: readonly (string | null)[];
   metadata?: readonly (ClassificationMetadata | null)[];
@@ -57,6 +60,7 @@ interface SingleClassifyResponse {
   prediction: Prediction;
   score: number;
   threshold: number;
+  review?: unknown;
   mode?: unknown;
   primary_outcome?: unknown;
   outcome_scores?: unknown;
@@ -67,6 +71,36 @@ interface SingleClassifyResponse {
 
 interface BatchClassifyResponse {
   predictions: readonly SingleClassifyResponse[];
+  review?: unknown;
+}
+
+function validateReview(value: unknown, name: string): ReviewLevel | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value !== "standard" && value !== "deep") {
+    throw new Error(`Firewall: ${name} must be standard or deep`);
+  }
+  return value;
+}
+
+function resolveReview(perCallReview: unknown, clientReview?: ReviewLevel): ReviewLevel | undefined {
+  return perCallReview === undefined
+    ? clientReview
+    : validateReview(perCallReview, "review");
+}
+
+function verifyReviewAcknowledgement(
+  acknowledgedReview: unknown,
+  requestedReview: ReviewLevel | undefined,
+): void {
+  if (requestedReview !== undefined && acknowledgedReview !== requestedReview) {
+    throw new ReviewCompatibilityError(requestedReview, acknowledgedReview);
+  }
+}
+
+function reviewAcknowledgementFromResponse(response: unknown): unknown {
+  return isRecord(response) ? response.review : undefined;
 }
 
 function resolveMode(value: unknown, requestedMode?: FirewallMode): FirewallMode | undefined {
@@ -90,6 +124,7 @@ function legacyMode(shadowMode: boolean | undefined): FirewallMode | undefined {
 function blockResultFromResponse(
   data: SingleClassifyResponse,
   requestedMode?: FirewallMode,
+  requestedReview?: ReviewLevel,
 ): BlockResult {
   if (data.prediction !== "BENIGN" && data.prediction !== "MALICIOUS") {
     throw new Error("Firewall: response prediction must be BENIGN or MALICIOUS");
@@ -98,6 +133,7 @@ function blockResultFromResponse(
     prediction: Prediction;
     score: number;
     threshold: number;
+    review?: ReviewLevel;
     mode?: FirewallMode;
     primaryOutcome?: NonNullable<BlockResult["primaryOutcome"]>;
     outcomeScores?: NonNullable<BlockResult["outcomeScores"]>;
@@ -109,6 +145,9 @@ function blockResultFromResponse(
     score: Number(data.score),
     threshold: Number(data.threshold),
   };
+  if (requestedReview !== undefined) {
+    result.review = requestedReview;
+  }
   const mode = resolveMode(data.mode, requestedMode);
   if (mode !== undefined) {
     result.mode = mode;
@@ -451,6 +490,7 @@ export class Firewall {
   readonly timeoutMs: number;
   readonly shadowMode: boolean;
   readonly mode: FirewallMode | undefined;
+  readonly review: ReviewLevel | undefined;
 
   private readonly headers: Readonly<Record<string, string>>;
 
@@ -473,6 +513,7 @@ export class Firewall {
       );
     }
     this.mode = options.mode ?? legacyMode(options.shadowMode);
+    this.review = validateReview(options.review, "review");
     this.shadowMode = this.mode === "shadow";
     this.headers = Object.freeze({
       "x-api-key": this.apiKey,
@@ -518,8 +559,12 @@ export class Firewall {
       texts: texts.map((text) => sanitizeText(text)),
     };
     const requestedMode = options.mode ?? this.mode;
+    const requestedReview = resolveReview(options.review, this.review);
     if (requestedMode !== undefined) {
       payload.mode = requestedMode;
+    }
+    if (requestedReview !== undefined) {
+      payload.review = requestedReview;
     }
     if (options.hooks && options.hooks.length > 0) {
       payload.hooks = options.hooks.map((h) => String(h));
@@ -542,6 +587,7 @@ export class Firewall {
       );
     }
     const data = await this.postWithRetry<BatchClassifyResponse>(payload, options.signal);
+    verifyReviewAcknowledgement(reviewAcknowledgementFromResponse(data), requestedReview);
     if (!Array.isArray(data.predictions)) {
       throw new Error("Firewall: response predictions must be an array");
     }
@@ -550,7 +596,9 @@ export class Firewall {
         `Firewall: response predictions length ${data.predictions.length} does not match submitted texts length ${payload.texts.length}`,
       );
     }
-    return data.predictions.map((p) => blockResultFromResponse(p, requestedMode));
+    return data.predictions.map((p) =>
+      blockResultFromResponse(p, requestedMode, requestedReview)
+    );
   }
 
   asLangChainHandler<THandler = LangChainFirewallHandler>(
@@ -622,8 +670,12 @@ export class Firewall {
   ): Promise<BlockResult> {
     const payload: SingleClassifyPayload = { text };
     const requestedMode = options.mode ?? this.mode;
+    const requestedReview = resolveReview(options.review, this.review);
     if (requestedMode !== undefined) {
       payload.mode = requestedMode;
+    }
+    if (requestedReview !== undefined) {
+      payload.review = requestedReview;
     }
     if (options.hook !== undefined) {
       payload.hook = options.hook;
@@ -639,6 +691,7 @@ export class Firewall {
       ...(options.governance === undefined ? {} : { governance: options.governance }),
     });
     const data = await this.postWithRetry<SingleClassifyResponse>(payload, options.signal);
-    return blockResultFromResponse(data, requestedMode);
+    verifyReviewAcknowledgement(reviewAcknowledgementFromResponse(data), requestedReview);
+    return blockResultFromResponse(data, requestedMode, requestedReview);
   }
 }

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add explicit `standard` and `deep` review selection for clients and individual
+  classify calls, with per-call precedence and legacy omission behavior.
+- Verify top-level review acknowledgements before returning results or invoking
+  adapter callbacks, and expose non-retryable `ReviewCompatibilityError` for
+  missing or mismatched acknowledgements.
+- Preserve review defaults through Vercel, LangChain, and Deep Agents adapters
+  without adding adapter-specific review options.
+
 ## 0.7.7
 
 - Preserve optional governance response evidence for the canonical resource,

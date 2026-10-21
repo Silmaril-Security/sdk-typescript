@@ -4,7 +4,10 @@
 import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 
 import type { Firewall } from "../firewall.js";
-import { FirewallBlockedException } from "../exceptions.js";
+import {
+  FirewallBlockedException,
+  isReviewCompatibilityError,
+} from "../exceptions.js";
 import {
   FIREWALL_HOOK_TO_LABEL,
   FirewallHook,
@@ -120,6 +123,9 @@ export async function createLangChainHandler(
         ...(toolName !== undefined ? { toolName } : {}),
       });
     } catch (err) {
+      if (isReviewCompatibilityError(err)) {
+        throw err;
+      }
       if (!failOpen) {
         throw err;
       }

@@ -2,7 +2,7 @@
 // PROPRIETARY AND CONFIDENTIAL
 
 import type { HookLabel } from "./hooks.js";
-import type { BlockResult } from "./types.js";
+import type { BlockResult, ReviewLevel } from "./types.js";
 
 const MAX_PROMPT_DISPLAY_LEN = 100;
 
@@ -76,6 +76,46 @@ export class FirewallBlockedException extends Error {
 export const PromptBlockedException = FirewallBlockedException;
 /** @deprecated Use FirewallBlockedException instead. */
 export type PromptBlockedException = FirewallBlockedException;
+
+const REVIEW_COMPATIBILITY_ERROR_BRAND = Symbol.for(
+  "@silmaril-security/sdk/ReviewCompatibilityError",
+);
+
+export class ReviewCompatibilityError extends Error {
+  readonly requestedReview: ReviewLevel;
+  readonly acknowledgedReview: unknown;
+
+  constructor(requestedReview: ReviewLevel, acknowledgedReview: unknown) {
+    const detail = acknowledgedReview === undefined
+      ? "the response omitted its acknowledgement"
+      : "the response acknowledgement did not match";
+    super(`Silmaril review compatibility error: ${detail} for requested ${requestedReview} review`);
+    this.name = "ReviewCompatibilityError";
+    this.requestedReview = requestedReview;
+    this.acknowledgedReview = acknowledgedReview;
+    Object.defineProperty(this, REVIEW_COMPATIBILITY_ERROR_BRAND, {
+      value: true,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+    Object.setPrototypeOf(this, ReviewCompatibilityError.prototype);
+  }
+}
+
+export function isReviewCompatibilityError(error: unknown): error is ReviewCompatibilityError {
+  if ((typeof error !== "object" && typeof error !== "function") || error === null) {
+    return false;
+  }
+  try {
+    return Object.getOwnPropertyDescriptor(
+      error,
+      REVIEW_COMPATIBILITY_ERROR_BRAND,
+    )?.value === true;
+  } catch {
+    return false;
+  }
+}
 
 export class SilmarilApiError extends Error {
   readonly status: number;

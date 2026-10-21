@@ -7,6 +7,7 @@ import { createDeepAgent, GENERAL_PURPOSE_SUBAGENT, type AnySubAgent, type Compi
 import { createAgent, createMiddleware, type CreateAgentParams } from "langchain";
 
 import type { Firewall } from "../firewall.js";
+import { isReviewCompatibilityError } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
 import type { ClassifyEvent, FirewallMode } from "../types.js";
 
@@ -90,6 +91,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
       }
       return { enforce: blocked && mode === "block", mode };
     } catch (error) {
+      if (isReviewCompatibilityError(error)) throw error;
       if (options.failOpen === false) throw error;
       return { enforce: false, mode: effectiveMode };
     }
