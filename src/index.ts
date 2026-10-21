@@ -6,7 +6,12 @@ export {
   DEFAULT_TIMEOUT_MS,
 } from "./firewall.js";
 
-export { FirewallBlockedException, PromptBlockedException, SilmarilApiError } from "./exceptions.js";
+export {
+  FirewallBlockedException,
+  PromptBlockedException,
+  ReviewCompatibilityError,
+  SilmarilApiError,
+} from "./exceptions.js";
 export type { MalformedInputDetails } from "./exceptions.js";
 
 export type { FirewallMiddleware } from "./adapters/vercel.js";
@@ -49,6 +54,7 @@ export type {
   ClassifyEvent,
   Prediction,
   FirewallMode,
+  ReviewLevel,
   GovernanceAction,
   GovernanceResourceKind,
   GovernanceResource,

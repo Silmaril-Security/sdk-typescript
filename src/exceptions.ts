@@ -2,7 +2,7 @@
 // PROPRIETARY AND CONFIDENTIAL
 
 import type { HookLabel } from "./hooks.js";
-import type { BlockResult } from "./types.js";
+import type { BlockResult, ReviewLevel } from "./types.js";
 
 const MAX_PROMPT_DISPLAY_LEN = 100;
 
@@ -76,6 +76,22 @@ export class FirewallBlockedException extends Error {
 export const PromptBlockedException = FirewallBlockedException;
 /** @deprecated Use FirewallBlockedException instead. */
 export type PromptBlockedException = FirewallBlockedException;
+
+export class ReviewCompatibilityError extends Error {
+  readonly requestedReview: ReviewLevel;
+  readonly acknowledgedReview: unknown;
+
+  constructor(requestedReview: ReviewLevel, acknowledgedReview: unknown) {
+    const detail = acknowledgedReview === undefined
+      ? "the response omitted its acknowledgement"
+      : "the response acknowledgement did not match";
+    super(`Silmaril review compatibility error: ${detail} for requested ${requestedReview} review`);
+    this.name = "ReviewCompatibilityError";
+    this.requestedReview = requestedReview;
+    this.acknowledgedReview = acknowledgedReview;
+    Object.setPrototypeOf(this, ReviewCompatibilityError.prototype);
+  }
+}
 
 export class SilmarilApiError extends Error {
   readonly status: number;

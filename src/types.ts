@@ -6,6 +6,7 @@ import type { HarmfulOutcome, PrimaryOutcome } from "./outcomes.js";
 
 export type Prediction = "BENIGN" | "MALICIOUS";
 export type FirewallMode = "shadow" | "warn" | "block";
+export type ReviewLevel = "standard" | "deep";
 export type GovernanceAction = "allow" | "block";
 export type GovernanceResourceKind =
   | "agent"
@@ -46,6 +47,8 @@ export interface BlockResult {
   readonly prediction: Prediction;
   readonly score: number;
   readonly threshold: number;
+  /** Applied review selection acknowledged by the server; not proof that a judge executed. */
+  readonly review?: ReviewLevel;
   /** Omitted when neither an explicit local override nor the response supplies a mode. */
   readonly mode?: FirewallMode;
   readonly primaryOutcome?: PrimaryOutcome;
@@ -61,6 +64,8 @@ export interface FirewallOptions {
   timeoutMs?: number;
   /** Explicit local client default; a per-call or per-adapter mode takes precedence. */
   mode?: FirewallMode;
+  /** Explicit client review default; per-call review takes precedence. */
+  review?: ReviewLevel;
   /** @deprecated Use mode: "shadow" or mode: "block". */
   shadowMode?: boolean;
 }
@@ -70,6 +75,8 @@ export type ClassificationMetadata = Readonly<Record<string, unknown>>;
 export interface ClassifyOptions {
   /** Explicit local per-call override; authoritative over any response mode. */
   mode?: FirewallMode;
+  /** Explicit per-call review selection; takes precedence over the client default. */
+  review?: ReviewLevel;
   hook?: HookLabel;
   toolName?: string;
   governance?: GovernanceContext;
@@ -85,6 +92,8 @@ export interface ClassifyOptions {
 export interface ClassifyBatchOptions {
   /** Explicit local per-call override; authoritative over every response mode. */
   mode?: FirewallMode;
+  /** Explicit per-call review selection for the entire batch. */
+  review?: ReviewLevel;
   hooks?: readonly HookLabel[];
   toolNames?: readonly (string | undefined)[];
   governance?: readonly (GovernanceContext | undefined)[];

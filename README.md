@@ -128,6 +128,50 @@ result and the exception. Disabled and observe policy paths can retain the
 compatibility threshold. The adapters do not compare `score` to a local
 threshold.
 
+## Review Levels
+
+Review selection is source-prepared and unreleased. Deploy compatible backend
+support before using an explicit selection; the package version is unchanged.
+
+Omit `review` to inherit the selected tenant/surface AppConfig
+`threat_judge.enabled` value without
+adding a review field to the request. Set `review: "standard"` to disable the
+optional large-judge stage for that request, or `review: "deep"` to enable it
+with the server-owned judge configuration. A per-call selection takes
+precedence over a client default.
+
+Deep review uses the existing second opinion on eligible Qwen threat candidates.
+It requires an active Cascade runtime with a supported judge configured, even
+when its AppConfig default is `enabled: false`; unsupported selections return
+HTTP 400. Removing the judge configuration prevents deep requests. Standard
+review is valid without a configured judge, and review is independent of `mode`.
+
+TypeScript:
+
+```ts
+const configured = new Firewall({
+  apiKey: process.env.SILMARIL_API_KEY!,
+  apiUrl: process.env.SILMARIL_API_URL!,
+}); // review omitted
+
+await configured.classify(userInput, { review: "standard" });
+
+const deepByDefault = new Firewall({
+  apiKey: process.env.SILMARIL_API_KEY!,
+  apiUrl: process.env.SILMARIL_API_URL!,
+  review: "deep",
+});
+await deepByDefault.classify(userInput);
+```
+
+Explicit review selection requires a backend that supports the review wire
+contract. The SDK verifies the successful response's top-level acknowledgement
+before returning results or invoking adapter callbacks. A missing or mismatched
+acknowledgement throws non-retryable `ReviewCompatibilityError`. The
+acknowledged `result.review` reports the applied setting, not whether the
+optional judge actually executed. Adapters inherit the client default and do
+not add a separate review override.
+
 ## Concurrency and Cancellation
 
 A `Firewall` instance holds no per-request state, so one client can serve any
@@ -242,6 +286,7 @@ interface FirewallOptions {
   apiUrl: string;                                     // required
   timeoutMs?: number;                                 // default: 10000 ms, max 2147483647
   mode?: "shadow" | "warn" | "block";                // explicit local client default
+  review?: "standard" | "deep";                       // explicit client review default
   shadowMode?: boolean;                               // deprecated legacy mapping
 }
 ```
@@ -415,6 +460,10 @@ identity and does not change enforcement behavior.
   refused redirect does not expose a reliable redirect status to JavaScript,
   particularly in browsers, so it is not reported as `SilmarilApiError`.
 - `FirewallBlockedException`: thrown by the Vercel AI SDK and LangChain.js adapters when a malicious or governance-block decision has effective Block mode. The message distinguishes governance-policy denials from threat-score denials. Carries `score`, `threshold`, `promptText`, and optional `runId`, `hook`, `toolName`, `toolCallId`, and `result`.
+- `ReviewCompatibilityError`: thrown when an explicit review selection is not
+  acknowledged exactly by a successful backend response. That successful
+  response is not retried; prior transient rate-limit responses may already
+  have been retried. Fail-open adapters propagate the compatibility error.
 
 `PromptBlockedException` remains as a deprecated alias of
 `FirewallBlockedException`.
