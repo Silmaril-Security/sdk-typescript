@@ -9,6 +9,7 @@ import { createAgent, createMiddleware, type CreateAgentParams } from "langchain
 import type { Firewall } from "../firewall.js";
 import { isReviewCompatibilityError } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
+import { validateMode } from "../modes.js";
 import type { ClassifyEvent, FirewallMode } from "../types.js";
 
 export const SAFE_TOOL_MESSAGE = "Silmaril Firewall blocked this tool interaction. Choose a different safe action.";
@@ -70,7 +71,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
   if (!Number.isInteger(maxBlockedAttempts) || maxBlockedAttempts < 1) {
     throw new Error("maxBlockedAttempts must be a positive integer");
   }
-  const effectiveMode = options.mode ?? firewall.mode;
+  const effectiveMode = validateMode(options.mode) ?? firewall.mode;
   const classify = async (text: string, hook: HookLabel, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined }> => {
     if (!text.trim()) return { enforce: false, mode: effectiveMode };
     try {
