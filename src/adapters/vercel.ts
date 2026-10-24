@@ -4,6 +4,7 @@
 import type { Firewall } from "../firewall.js";
 import { FirewallBlockedException } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
+import { validateMode } from "../modes.js";
 import type { BlockResult, MiddlewareOptions } from "../types.js";
 
 interface VercelContentPart {
@@ -159,7 +160,7 @@ export function createMiddleware(
 ): FirewallMiddleware {
   const scanInput = options.scanInput ?? true;
   const scanOutput = options.scanOutput ?? false;
-  const requestedMode = options.mode ?? (
+  const requestedMode = validateMode(options.mode) ?? (
     options.shadowMode === undefined
       ? firewall.mode
       : options.shadowMode ? "shadow" : "block"

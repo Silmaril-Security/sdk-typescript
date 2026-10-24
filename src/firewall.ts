@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
 import { ReviewCompatibilityError, SilmarilApiError } from "./exceptions.js";
+import { validateMode } from "./modes.js";
 import { normalizeHarmfulOutcomeMap, normalizePrimaryOutcome } from "./outcomes.js";
 import { sanitizeText } from "./sanitization.js";
 import type {
@@ -24,7 +25,7 @@ import type {
   ReviewLevel,
 } from "./types.js";
 
-export const SDK_VERSION = "0.7.8";
+export const SDK_VERSION = "0.7.9";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
@@ -512,7 +513,7 @@ export class Firewall {
         `Firewall: timeoutMs must be at most ${MAX_TIMEOUT_MS} ms, got ${this.timeoutMs}`,
       );
     }
-    this.mode = options.mode ?? legacyMode(options.shadowMode);
+    this.mode = validateMode(options.mode) ?? legacyMode(options.shadowMode);
     this.review = validateReview(options.review, "review");
     this.shadowMode = this.mode === "shadow";
     this.headers = Object.freeze({
@@ -558,7 +559,7 @@ export class Firewall {
     const payload: BatchClassifyPayload = {
       texts: texts.map((text) => sanitizeText(text)),
     };
-    const requestedMode = options.mode ?? this.mode;
+    const requestedMode = validateMode(options.mode) ?? this.mode;
     const requestedReview = resolveReview(options.review, this.review);
     if (requestedMode !== undefined) {
       payload.mode = requestedMode;
@@ -669,7 +670,7 @@ export class Firewall {
     },
   ): Promise<BlockResult> {
     const payload: SingleClassifyPayload = { text };
-    const requestedMode = options.mode ?? this.mode;
+    const requestedMode = validateMode(options.mode) ?? this.mode;
     const requestedReview = resolveReview(options.review, this.review);
     if (requestedMode !== undefined) {
       payload.mode = requestedMode;

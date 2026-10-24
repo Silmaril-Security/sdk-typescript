@@ -15,6 +15,7 @@ import {
   resolveHooks,
 } from "../hooks.js";
 import type { BlockResult, ClassifyEvent, LangChainAdapterOptions } from "../types.js";
+import { validateMode } from "../modes.js";
 import {
   extractTextFromDocuments,
   extractTextFromLLMResult,
@@ -87,7 +88,7 @@ export async function createLangChainHandler(
       // eslint-disable-next-line no-console
       console.warn(`silmaril.firewall: ${message}`, error);
     });
-  const requestedMode = options.mode ?? (
+  const requestedMode = validateMode(options.mode) ?? (
     options.shadowMode === undefined
       ? firewall.mode
       : options.shadowMode ? "shadow" : "block"

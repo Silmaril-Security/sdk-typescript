@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.9
+
+- Reject invalid runtime mode values in clients, per-call overrides, and all
+  framework adapters before requests or fail-open handling. Valid modes and
+  legacy defaults retain their existing behavior.
+
 ## 0.7.8
 
 - Add explicit `standard` and `deep` review selection for clients and individual
