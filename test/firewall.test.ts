@@ -296,7 +296,10 @@ describe("Firewall.classify", () => {
           primary_outcome: "data_exfiltration",
           outcome_scores: { data_exfiltration: 0.8 },
           detector_scores: { data_exfiltration: 0.7 },
-          detector_counts: { data_exfiltration: 1 },
+          detector_counts: {
+            [Outcome.SecretExposure]: 0,
+            data_exfiltration: 2,
+          },
         },
       },
     ]);
@@ -308,7 +311,10 @@ describe("Firewall.classify", () => {
       primaryOutcome: "data_exfiltration",
       outcomeScores: { data_exfiltration: 0.8 },
       detectorScores: { data_exfiltration: 0.7 },
-      detectorCounts: { data_exfiltration: 1 },
+      detectorCounts: {
+        [Outcome.SecretExposure]: 0,
+        data_exfiltration: 2,
+      },
     });
   });
 
@@ -337,6 +343,27 @@ describe("Firewall.classify", () => {
       },
     ]);
     await expect(fw.classify("x")).rejects.toThrow(/invalid detector_scores value/);
+  });
+
+  it.each([
+    { description: "negative", count: -1 },
+    { description: "fractional", count: 1.5 },
+    { description: "NaN", count: Number.NaN },
+    { description: "infinite", count: Number.POSITIVE_INFINITY },
+  ])("rejects $description detector counts", async ({ count }) => {
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.91,
+          detector_counts: { [Outcome.SecretExposure]: count },
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    await expect(fw.classify("x")).rejects.toThrow(/invalid detector_counts value/);
   });
 
   it("includes hook and tool_name wire keys when provided", async () => {
@@ -778,6 +805,34 @@ describe("Firewall.classifyBatch", () => {
       detectorScores: { [Outcome.InformationDisclosure]: 0.85 },
       detectorCounts: { [Outcome.InformationDisclosure]: 1 },
     });
+  });
+
+  it.each([
+    { description: "negative", count: -1 },
+    { description: "fractional", count: 1.5 },
+    { description: "NaN", count: Number.NaN },
+    { description: "infinite", count: Number.POSITIVE_INFINITY },
+  ])("rejects $description detector counts in batch responses", async ({ count }) => {
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          predictions: [
+            { prediction: "BENIGN", score: 0.01 },
+            {
+              prediction: "MALICIOUS",
+              score: 0.9,
+              detector_counts: { data_exfiltration: count },
+            },
+          ],
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    await expect(fw.classifyBatch(["a", "b"])).rejects.toThrow(
+      /invalid detector_counts value/,
+    );
   });
 
   it("serializes hooks and tool_names when provided", async () => {

@@ -11,6 +11,7 @@ import {
   OUTCOME_DESCRIPTIONS,
   PRIMARY_OUTCOMES,
 } from "../src/index.js";
+import { normalizeHarmfulOutcomeCountMap } from "../src/outcomes.js";
 
 describe("outcomes", () => {
   it("exports ordered primary and harmful outcome taxonomy", () => {
@@ -70,5 +71,29 @@ describe("outcomes", () => {
     expect(() =>
       normalizeHarmfulOutcomeMap({ [Outcome.SecretExposure]: "high" }, "outcome_scores"),
     ).toThrow(/invalid outcome_scores value/);
+  });
+
+  it("normalizes detector count maps as finite non-negative integers", () => {
+    expect(
+      normalizeHarmfulOutcomeCountMap(
+        {
+          [Outcome.SecretExposure]: 0,
+          data_exfiltration: 3,
+        },
+        "detector_counts",
+      ),
+    ).toEqual({
+      [Outcome.SecretExposure]: 0,
+      data_exfiltration: 3,
+    });
+
+    for (const invalidCount of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        normalizeHarmfulOutcomeCountMap(
+          { [Outcome.SecretExposure]: invalidCount },
+          "detector_counts",
+        ),
+      ).toThrow(/invalid detector_counts value/);
+    }
   });
 });
