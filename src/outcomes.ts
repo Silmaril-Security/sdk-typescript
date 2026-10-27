@@ -130,3 +130,24 @@ export function normalizeHarmfulOutcomeMap(
   }
   return Object.freeze(out);
 }
+
+export function normalizeHarmfulOutcomeCountMap(
+  values: unknown,
+  fieldName: string,
+): Readonly<Partial<Record<HarmfulOutcome, number>>> | undefined {
+  const out = normalizeHarmfulOutcomeMap(values, fieldName);
+  if (out === undefined) {
+    return undefined;
+  }
+  for (const [key, value] of Object.entries(out)) {
+    if (
+      typeof value !== "number"
+      || !Number.isFinite(value)
+      || !Number.isInteger(value)
+      || value < 0
+    ) {
+      throw new Error(`Firewall: invalid ${fieldName} value for ${JSON.stringify(key)}`);
+    }
+  }
+  return out;
+}

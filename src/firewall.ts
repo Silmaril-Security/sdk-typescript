@@ -6,7 +6,11 @@ import { randomUUID } from "node:crypto";
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
 import { ReviewCompatibilityError, SilmarilApiError } from "./exceptions.js";
 import { validateMode } from "./modes.js";
-import { normalizeHarmfulOutcomeMap, normalizePrimaryOutcome } from "./outcomes.js";
+import {
+  normalizeHarmfulOutcomeCountMap,
+  normalizeHarmfulOutcomeMap,
+  normalizePrimaryOutcome,
+} from "./outcomes.js";
 import { sanitizeText } from "./sanitization.js";
 import type {
   BlockResult,
@@ -169,7 +173,10 @@ function blockResultFromResponse(
     }
   }
   if (data.detector_counts !== undefined) {
-    const detectorCounts = normalizeHarmfulOutcomeMap(data.detector_counts, "detector_counts");
+    const detectorCounts = normalizeHarmfulOutcomeCountMap(
+      data.detector_counts,
+      "detector_counts",
+    );
     if (detectorCounts !== undefined) {
       result.detectorCounts = detectorCounts;
     }
