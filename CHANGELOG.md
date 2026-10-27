@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.10
+
+- Require detector counts in single and batch classification responses to be
+  nonnegative integers while preserving valid floating-point scores and
+  forward-compatible unknown keys. No unrelated features are included.
+
 ## 0.7.9
 
 - Reject invalid runtime mode values in clients, per-call overrides, and all
