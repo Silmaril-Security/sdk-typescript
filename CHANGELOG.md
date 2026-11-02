@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.1
+
+- Preserve native thread defaults and config factories on runnables configured
+  before `protectLangChainRunnable()`. Install the protection boundary inside
+  existing native bindings so defaults, invocation overrides, callbacks and
+  config factories resolve once before conversation identity is captured.
+- Verify pre-bound invoke, batch and streaming behavior and native override
+  precedence in source tests and the built ESM/CJS package release gate.
+
 ## 0.8.0
 
 - Use each invocation’s native framework thread ID for LangChain, LangGraph,

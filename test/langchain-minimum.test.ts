@@ -2,7 +2,7 @@
 // the supported minimum core version without LangGraph or Deep Agents APIs.
 import { AIMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
-import { RunnableLambda } from "@langchain/core/runnables";
+import { RunnableBinding, RunnableLambda } from "@langchain/core/runnables";
 import { describe, expect, it, vi } from "vitest";
 
 import { ALL_HOOKS, Firewall } from "../src/index.js";
@@ -32,4 +32,23 @@ describe("minimum LangChain compatibility", () => {
       expect(ids.slice(first)).toEqual([thread, thread]);
     }
   });
+});
+
+
+it("resolves saved native defaults and dynamic factories before protection on minimum core", async () => {
+  const fw = new Firewall({ apiKey: "test", apiUrl: "https://test.invalid/classify" });
+  const ids: unknown[] = [];
+  fw.classify = vi.fn(async (_text, options) => {
+    ids.push(options?.metadata?.conversationId);
+    return { prediction: "BENIGN", score: 0, threshold: 0.5, mode: "block" };
+  }) as typeof fw.classify;
+  const native = new FakeListChatModel({ responses: ["result"] });
+  const saved = await protectLangChainRunnable(fw, native.withConfig({ configurable: { thread_id: "saved" } }));
+  await saved.invoke("hello");
+  expect(ids).toEqual(["saved"]);
+  const factory = vi.fn(() => ({ configurable: { thread_id: "dynamic" } }));
+  const dynamic = await protectLangChainRunnable(fw, new RunnableBinding({ bound: native, config: {}, configFactories: [factory] }));
+  await dynamic.invoke("hello");
+  expect(ids).toEqual(["saved", "dynamic"]);
+  expect(factory).toHaveBeenCalledTimes(1);
 });

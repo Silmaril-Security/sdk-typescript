@@ -482,5 +482,35 @@ export async function protectLangChainRunnable<RunInput, RunOutput, CallOptions 
       });
     }
   }
-  return new ProtectedBinding({ bound: runnable, config: {}, configFactories });
+  const bindings = new Set<Runnable<RunInput, RunOutput, CallOptions>>();
+  const installBoundary = (candidate: Runnable<RunInput, RunOutput, CallOptions>): RunnableBindingType<RunInput, RunOutput, CallOptions> => {
+    if (!RunnableBinding.isRunnableBinding(candidate)) {
+      return new ProtectedBinding({ bound: candidate, config: {}, configFactories });
+    }
+    if (bindings.has(candidate)) throw new TypeError("Cannot protect cyclic runnable bindings");
+    bindings.add(candidate);
+    const binding = candidate as RunnableBindingType<RunInput, RunOutput, CallOptions>;
+    const Binding = binding.constructor as new (fields: Record<string, unknown>) => RunnableBindingType<RunInput, RunOutput, CallOptions>;
+    // Keep native defaults, kwargs, retry settings and config factories outside
+    // our boundary. They resolve exactly once before we capture the final config.
+    // Reconstruct rather than mutate a runnable owned by the caller.
+    return new Binding({ ...binding, bound: installBoundary(binding.bound) });
+  };
+  // Keep original native layers inside a stable composition shell. Native
+  // binding helpers can otherwise reconstruct themselves without their factories.
+  class ComposableBinding extends RunnableBinding<RunInput, RunOutput, CallOptions> {
+    override withConfig(config: Partial<CallOptions>) {
+      return new ComposableBinding({ bound: this.bound, config: mergeConfigs(this.config, config as RunnableConfig) });
+    }
+    override withListeners(fields: Parameters<RunnableBindingType<RunInput, RunOutput, CallOptions>["withListeners"]>[0]): ReturnType<RunnableBindingType<RunInput, RunOutput, CallOptions>["withListeners"]> {
+      return new RunnableBinding({ bound: this, config: {} }).withListeners(fields);
+    }
+    override withRetry(fields?: Parameters<RunnableBindingType<RunInput, RunOutput, CallOptions>["withRetry"]>[0]): ReturnType<RunnableBindingType<RunInput, RunOutput, CallOptions>["withRetry"]> {
+      return new RunnableRetry({ bound: this, config: {},
+        ...(fields?.stopAfterAttempt === undefined ? {} : { maxAttemptNumber: fields.stopAfterAttempt }),
+        ...(fields?.onFailedAttempt === undefined ? {} : { onFailedAttempt: fields.onFailedAttempt }),
+      });
+    }
+  }
+  return new ComposableBinding({ bound: installBoundary(runnable), config: {} });
 }
