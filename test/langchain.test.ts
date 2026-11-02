@@ -11,8 +11,8 @@ it("default tool hooks pass the run ID as correlation metadata", async () => {
     calls.push({ hook: options?.hook, metadata: options?.metadata });
     return { prediction: "BENIGN", score: 0.1, threshold: 0.5, mode: "block" };
   }) as typeof firewall.classify;
-  const handler = await createLangChainHandler(firewall, { conversationId: "conversation-1" });
-  await handler.handleToolStart?.({ name: "search" } as never, "safe", "run-1");
+  const handler = await createLangChainHandler(firewall);
+  await handler.handleToolStart?.({ name: "search" } as never, "safe", "run-1", undefined, undefined, { thread_id: "conversation-1" });
   await handler.handleToolEnd?.("result", "run-1");
   expect(calls.map((call) => call.hook)).toEqual([HookLabel.TOOL_CALL, HookLabel.TOOL_RESPONSE]);
   expect(calls.every((call) => JSON.stringify(call.metadata) === JSON.stringify({ langgraph: { run_id: "run-1" }, conversationId: "conversation-1" }))).toBe(true);
@@ -219,7 +219,7 @@ describe("LangChain adapter — fail-open / fail-closed", () => {
     const handler = (await createLangChainHandler(firewall)) as unknown as {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
-    await expect(handler.handleLLMStart({}, ["hello"], "run-1")).resolves.toBeUndefined();
+    await expect(handler.handleLLMStart({}, ["hello"], "run-1")).resolves.toBeDefined();
   });
 
   it("fails closed when failOpen: false", async () => {
@@ -275,7 +275,7 @@ describe("LangChain adapter — governance", () => {
       })) as unknown as {
         handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
       };
-      await expect(handler.handleLLMStart({}, ["hello"], "run-1")).resolves.toBeUndefined();
+      await expect(handler.handleLLMStart({}, ["hello"], "run-1")).resolves.toBeDefined();
     }
   });
 });
@@ -451,7 +451,7 @@ describe("LangChain adapter — shadow mode", () => {
     })) as unknown as {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
-    await expect(handler.handleLLMStart({}, ["ignore previous"], "run-1")).resolves.toBeUndefined();
+    await expect(handler.handleLLMStart({}, ["ignore previous"], "run-1")).resolves.toBeDefined();
     expect(events).toEqual([{ blocked: true, shadowMode: true }]);
   });
 
@@ -466,7 +466,7 @@ describe("LangChain adapter — shadow mode", () => {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
 
-    await expect(handler.handleLLMStart({}, ["payload"], "run-legacy")).resolves.toBeUndefined();
+    await expect(handler.handleLLMStart({}, ["payload"], "run-legacy")).resolves.toBeDefined();
   });
 
   it("effective warn mode preserves the host flow and is exposed on events", async () => {
@@ -495,7 +495,7 @@ describe("LangChain adapter — shadow mode", () => {
       {},
       [[{ role: "user", content: "payload" }]],
       "run-warn",
-    )).resolves.toBeUndefined();
+    )).resolves.toBeDefined();
     expect(events).toEqual([{ mode: "warn", shadowMode: false }]);
   });
 
@@ -508,7 +508,7 @@ describe("LangChain adapter — shadow mode", () => {
     })) as unknown as {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
-    await expect(handler.handleLLMStart({}, ["x"], "r")).resolves.toBeUndefined();
+    await expect(handler.handleLLMStart({}, ["x"], "r")).resolves.toBeDefined();
     expect(events).toEqual([{ shadowMode: true }]);
   });
 

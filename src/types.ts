@@ -108,8 +108,6 @@ export interface ClassifyBatchOptions {
 
 export interface LangChainAdapterOptions {
   hooks?: ReadonlySet<FirewallHook>;
-  /** Caller-provided backend sequence identity. Never inferred from runId. */
-  conversationId?: string;
   includeSystem?: boolean;
   includeTool?: boolean;
   failOpen?: boolean;

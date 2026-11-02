@@ -73,7 +73,10 @@ describe("protected Deep Agents graph", () => {
       subagents: [{ name: "research", description: "Research" }],
       protectedCompiledSubagents: compiled,
     });
-    const output = await agent.invoke({ messages: [new HumanMessage("hello")] });
+    const output = await agent.invoke({ messages: [new HumanMessage("hello")] }, { configurable: { thread_id: "subagent-thread" } });
+    const classifyCalls = vi.mocked(firewall.classify).mock.calls;
+    expect(classifyCalls.length).toBeGreaterThan(2);
+    expect(classifyCalls.every(([, options]) => options?.metadata?.conversationId === "subagent-thread")).toBe(true);
     expect(output.messages.filter(ToolMessage.isInstance).map((message: ToolMessage) => message.content))
       .toEqual([SAFE_OUTPUT_MESSAGE]);
   });

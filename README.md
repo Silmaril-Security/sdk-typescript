@@ -34,10 +34,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-After publication, pin version 0.7.10 for reproducible installs:
+After publication, pin version 0.8.0 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.7.10
+npm install @silmaril-security/sdk@0.8.0
 ```
 
 Requires Node 20 or later.
@@ -594,17 +594,36 @@ Install the optional peer dependencies:
 npm install @langchain/core @langchain/openai
 ```
 
-Create a handler from the same client:
+Wrap a model or tool once, then reuse it across native threads:
 
 ```ts
 import { ChatOpenAI } from "@langchain/openai";
 import { Firewall } from "@silmaril-security/sdk";
+import { protectLangChainRunnable } from "@silmaril-security/sdk/adapters/langchain";
 
 const fw = new Firewall({ apiKey, apiUrl });
-const handler = await fw.asLangChainHandler();
+const model = await protectLangChainRunnable(fw, new ChatOpenAI());
 
-const model = new ChatOpenAI({ callbacks: [handler] });
-await model.invoke("Hello");
+await model.invoke("Hello", { configurable: { thread_id: "conversation-a" } });
+await model.invoke("Continue", { configurable: { thread_id: "conversation-a" } });
+await model.invoke("A different conversation", { configurable: { thread_id: "conversation-b" } });
+```
+
+The wrapper captures the actual native config for each invocation, including
+per-item batch configs, streams, and child calls with their own thread override.
+Caller callbacks are preserved. Bind model tools before wrapping; this generic
+runnable wrapper does not expose model-specific methods such as `bindTools()`.
+Use the protected constructor below for Deep Agents.
+
+For a graph already exposing native thread metadata, callback-only integration
+remains available:
+
+```ts
+const handler = await fw.asLangChainHandler();
+await graph.invoke(input, {
+  configurable: { thread_id: "conversation-a" },
+  callbacks: [handler],
+});
 ```
 
 The LangChain handler is fail-open by default: infrastructure errors are logged
@@ -615,9 +634,18 @@ is Block; Shadow and Warn preserve the host flow.
 Model-start, tool-start, and tool-end hooks are enabled by default; retriever
 and model-end (`LLM_END`) hooks remain opt-in. The LangChain run ID is sent as
 `metadata.langgraph.run_id`; every classification gets a distinct
-`metadata.silmaril.request_id`. Supply `conversationId` to the handler for
-sequence identity; it sends `metadata.conversationId`. Callback blocks throw
-and end that graph execution.
+`metadata.silmaril.request_id`. The current native thread ID is sent as
+`metadata.conversationId` without a separate Silmaril conversation option.
+Root and nested graph callbacks retain their captured identity through end/error
+events. Callback-only hooks cannot recover a direct-root or child invocation’s
+native config when the framework hides it from callbacks; those events omit
+conversation identity rather than guessing from a parent’s ambient context.
+Use `protectLangChainRunnable()` when those boundaries need correlation.
+Callback blocks throw and end that graph execution. Some upstream streaming
+cancellations emit no terminal callback. Callback-only bookkeeping is bounded
+at 4,096 outstanding runs and retains no prompt/output/token payloads; evicted
+unresolved completions omit identity. Prefer the runnable wrapper, which cleans
+its invocation handler when a stream is closed early.
 
 `asLangChainHandler()` is async because it lazy-loads `@langchain/core` so core
 users do not pay for it. The root package intentionally exposes a structural
@@ -640,8 +668,11 @@ import { createProtectedDeepAgent } from "@silmaril-security/sdk/adapters/deepag
 const agent = createProtectedDeepAgent(fw, {
   model, tools,
   subagents: [{ name: "research", description: "Research safely" }],
-  silmaril: { conversationId },
 });
+await agent.invoke(
+  { messages: [{ role: "user", content: "Research Redis Streams versus Kafka." }] },
+  { configurable: { thread_id: "conversation-a" } },
+);
 ```
 
 The constructor installs checks on the root, general-purpose, and declarative
@@ -664,6 +695,23 @@ and Warn report decisions through `onClassify` without replacing content.
 Classification errors allow model and tool execution by default; set
 `silmaril: { failOpen: false }` to require a successful classification. Already
 emitted streaming text cannot be recalled.
+
+## Migrating to 0.8.0
+
+Remove `conversationId` / `conversation_id` from LangChain handler options and
+Deep Agents `silmaril` middleware options. These removed options raise a
+`TypeError` with migration guidance, including when supplied by JavaScript.
+Use the framework’s normal `configurable.thread_id` on `invoke()`, `batch()`,
+or `stream()`; keep it stable for turns in the same conversation and use a new
+native thread for a different conversation. A single protected agent or runnable
+can serve many threads, including overlapping executions.
+
+Without a valid native thread ID, events are classified independently and
+`metadata.conversationId` is omitted. No run ID, request ID, or random UUID is
+substituted. Subagents inheriting a parent native thread share its conversation;
+separately executed graphs use their own native thread. Agent names and
+checkpoint namespaces do not change the conversation ID. The direct
+`classify()` API still accepts explicit `metadata.conversationId`.
 
 ## Retries
 
@@ -707,6 +755,6 @@ IDs must be non-empty; MCP tools also require their canonical server parent ID.
 The compatibility metadata copy remains attribution only. Caller agent metadata
 does not supply an authenticated principal.
 
-This source prepares version 0.7.10. Its registry install command becomes
+This source prepares version 0.8.0. Its registry install command becomes
 available after the authorized main-branch release workflow publishes the package.
 Confirm registry publication before installing this version.

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.0
+
+- Use each invocation’s native framework thread ID for LangChain, LangGraph,
+  and Deep Agents conversation correlation, including reusable and concurrent
+  agents, tool completion, and protected subagents. Threadless events remain
+  independent; run and request IDs are never used as conversation identity.
+- Add `protectLangChainRunnable()` for direct model/tool calls and native
+  invocation overrides that upstream callbacks do not expose. Standard invoke,
+  batch, stream, config, retry, and listener composition retain protection.
+- **Breaking:** remove adapter `conversationId` / `conversation_id` options.
+  Pass only the framework’s native `configurable.thread_id` at invocation time.
+  Removed options raise an actionable migration error for JavaScript callers.
+  Direct `classify()` metadata APIs are unchanged.
+
 ## 0.7.10
 
 - Require detector counts in single and batch classification responses to be
