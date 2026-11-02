@@ -72,6 +72,19 @@ async function verify(suite) {
   assert.equal(payloads.length - dynamicFirst, 2);
   assert.ok(payloads.slice(dynamicFirst).every((event) => event.metadata.conversationId === "dynamic-native"));
 
+  for (const configured of [
+    protectedDynamic.withConfig({ tags: ["after-protection"] }),
+    protectedDynamic.withRetry({ stopAfterAttempt: 2 }),
+    protectedDynamic.withListeners({ onEnd: () => {} }),
+  ]) {
+    const factoryBefore = nativeFactoryCalls;
+    const firstEvent = payloads.length;
+    await configured.invoke("composed dynamic config");
+    assert.equal(nativeFactoryCalls, factoryBefore + 1);
+    assert.equal(payloads.length - firstEvent, 2);
+    assert.ok(payloads.slice(firstEvent).every((event) => event.metadata.conversationId === "dynamic-native"));
+  }
+
   const agent = suite.createProtectedDeepAgent(fw, { model: new FakeListChatModel({ responses: ["done"] }) });
   const deepFirst = payloads.length;
   await agent.invoke({ messages: [new HumanMessage("research")] }, { configurable: { thread_id: "deep-native" } });

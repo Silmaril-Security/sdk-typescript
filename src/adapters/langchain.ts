@@ -496,5 +496,21 @@ export async function protectLangChainRunnable<RunInput, RunOutput, CallOptions 
     // Reconstruct rather than mutate a runnable owned by the caller.
     return new Binding({ ...binding, bound: installBoundary(binding.bound) });
   };
-  return installBoundary(runnable);
+  // Keep original native layers inside a stable composition shell. Native
+  // binding helpers can otherwise reconstruct themselves without their factories.
+  class ComposableBinding extends RunnableBinding<RunInput, RunOutput, CallOptions> {
+    override withConfig(config: Partial<CallOptions>) {
+      return new ComposableBinding({ bound: this.bound, config: mergeConfigs(this.config, config as RunnableConfig) });
+    }
+    override withListeners(fields: Parameters<RunnableBindingType<RunInput, RunOutput, CallOptions>["withListeners"]>[0]): ReturnType<RunnableBindingType<RunInput, RunOutput, CallOptions>["withListeners"]> {
+      return new RunnableBinding({ bound: this, config: {} }).withListeners(fields);
+    }
+    override withRetry(fields?: Parameters<RunnableBindingType<RunInput, RunOutput, CallOptions>["withRetry"]>[0]): ReturnType<RunnableBindingType<RunInput, RunOutput, CallOptions>["withRetry"]> {
+      return new RunnableRetry({ bound: this, config: {},
+        ...(fields?.stopAfterAttempt === undefined ? {} : { maxAttemptNumber: fields.stopAfterAttempt }),
+        ...(fields?.onFailedAttempt === undefined ? {} : { onFailedAttempt: fields.onFailedAttempt }),
+      });
+    }
+  }
+  return new ComposableBinding({ bound: installBoundary(runnable), config: {} });
 }

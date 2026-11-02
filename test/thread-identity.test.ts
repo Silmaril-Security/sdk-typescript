@@ -318,6 +318,21 @@ describe("protected native LangChain runnable", () => {
     expect(calls.every((call) => call.conversationId === "factory-thread")).toBe(true);
   });
 
+  it.each(["withConfig", "withRetry", "withListeners"] as const)("preserves existing dynamic factories after %s", async (method) => {
+    const { firewall, calls } = recordingFirewall();
+    const observer = { name: "observer", handleLLMEnd: vi.fn() };
+    const factory = vi.fn(() => ({ configurable: { thread_id: "factory-thread" }, callbacks: [observer] }));
+    const original = new RunnableBinding({ bound: echoModel(), config: {}, configFactories: [factory] });
+    const protectedModel = await protectLangChainRunnable(firewall, original, { hooks: ALL_HOOKS });
+    const model = method === "withConfig" ? protectedModel.withConfig({ tags: ["configured"] })
+      : method === "withRetry" ? protectedModel.withRetry({ stopAfterAttempt: 2 })
+      : protectedModel.withListeners({ onEnd: () => undefined });
+    await model.invoke("hello");
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(observer.handleLLMEnd).toHaveBeenCalledTimes(1);
+    expect(calls.map((call) => call.conversationId)).toEqual(["factory-thread", "factory-thread"]);
+  });
+
   it("captures direct-root and hidden nested overrides without caller conversation options", async () => {
     const { firewall, calls } = recordingFirewall();
     const model = await protectLangChainRunnable(firewall, echoModel(), { hooks: ALL_HOOKS });
