@@ -100,6 +100,7 @@ describe("callback identity lifecycle", () => {
     const { firewall, calls } = recordingFirewall();
     const handler = await createLangChainHandler(firewall, { hooks: new Set([FirewallHook.LLM_END]) });
     const secret = "private prompt and token contents";
+    await handler.handleChainStart!({} as never, { input: secret }, "evicted-chain", undefined, [], { thread_id: "old-thread" });
     for (let i = 0; i < 4100; i++) {
       await handler.handleLLMStart!({} as never, [secret], `abandoned-${i}`, undefined, undefined, [], { thread_id: `thread-${i}` });
       await handler.handleLLMNewToken!(secret, { prompt: 0, completion: 0 }, `abandoned-${i}`);
@@ -108,6 +109,9 @@ describe("callback identity lifecycle", () => {
     expect(tracer.runMap.size).toBeLessThanOrEqual(4096);
     expect(tracer.runTreeMap.size).toBe(0);
     expect(JSON.stringify([...tracer.runMap.values()])).not.toContain(secret);
+    expect(tracer.runMap.has("evicted-chain")).toBe(false);
+    await expect(handler.handleChainEnd!({ output: "successful completion" }, "evicted-chain")).resolves.toBeDefined();
+    expect(tracer.runMap.has("evicted-chain")).toBe(false);
     await handler.handleLLMEnd!({ generations: [[{ text: "safe" }]] }, "abandoned-0");
     expect(calls.at(-1)?.conversationId).toBeUndefined();
   });

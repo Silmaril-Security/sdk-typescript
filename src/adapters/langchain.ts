@@ -388,6 +388,7 @@ async function buildLangChainHandler(
     }
 
     override async handleChainEnd(...args: Parameters<BaseTracerType["handleChainEnd"]>): Promise<Run> {
+      if (!this.getRunById(args[1])) this._createRunForChainStart(serialized(undefined, "chain"), {}, args[1]);
       try { return await super.handleChainEnd(...args); } finally { finishRun(args[1]); }
     }
 
