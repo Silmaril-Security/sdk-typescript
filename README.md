@@ -34,10 +34,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-After publication, pin version 0.8.0 for reproducible installs:
+After publication, pin version 0.8.1 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.8.0
+npm install @silmaril-security/sdk@0.8.1
 ```
 
 Requires Node 20 or later.
@@ -610,8 +610,9 @@ await model.invoke("A different conversation", { configurable: { thread_id: "con
 ```
 
 The wrapper captures the actual native config for each invocation, including
-per-item batch configs, streams, and child calls with their own thread override.
-Caller callbacks are preserved. Bind model tools before wrapping; this generic
+preconfigured runnable defaults, per-item batch configs, streams, and child calls
+with their own thread override. Existing native config factories run once before
+identity is captured. Caller callbacks are preserved. Bind model tools before wrapping; this generic
 runnable wrapper does not expose model-specific methods such as `bindTools()`.
 Use the protected constructor below for Deep Agents.
 
@@ -696,7 +697,7 @@ Classification errors allow model and tool execution by default; set
 `silmaril: { failOpen: false }` to require a successful classification. Already
 emitted streaming text cannot be recalled.
 
-## Migrating to 0.8.0
+## Migrating to 0.8.1
 
 Remove `conversationId` / `conversation_id` from LangChain handler options and
 Deep Agents `silmaril` middleware options. These removed options raise a
@@ -755,6 +756,6 @@ IDs must be non-empty; MCP tools also require their canonical server parent ID.
 The compatibility metadata copy remains attribution only. Caller agent metadata
 does not supply an authenticated principal.
 
-This source prepares version 0.8.0. Its registry install command becomes
+This source prepares version 0.8.1. Its registry install command becomes
 available after the authorized main-branch release workflow publishes the package.
 Confirm registry publication before installing this version.

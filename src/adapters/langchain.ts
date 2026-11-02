@@ -482,5 +482,19 @@ export async function protectLangChainRunnable<RunInput, RunOutput, CallOptions 
       });
     }
   }
-  return new ProtectedBinding({ bound: runnable, config: {}, configFactories });
+  const bindings = new Set<Runnable<RunInput, RunOutput, CallOptions>>();
+  const installBoundary = (candidate: Runnable<RunInput, RunOutput, CallOptions>): RunnableBindingType<RunInput, RunOutput, CallOptions> => {
+    if (!RunnableBinding.isRunnableBinding(candidate)) {
+      return new ProtectedBinding({ bound: candidate, config: {}, configFactories });
+    }
+    if (bindings.has(candidate)) throw new TypeError("Cannot protect cyclic runnable bindings");
+    bindings.add(candidate);
+    const binding = candidate as RunnableBindingType<RunInput, RunOutput, CallOptions>;
+    const Binding = binding.constructor as new (fields: Record<string, unknown>) => RunnableBindingType<RunInput, RunOutput, CallOptions>;
+    // Keep native defaults, kwargs, retry settings and config factories outside
+    // our boundary. They resolve exactly once before we capture the final config.
+    // Reconstruct rather than mutate a runnable owned by the caller.
+    return new Binding({ ...binding, bound: installBoundary(binding.bound) });
+  };
+  return installBoundary(runnable);
 }

@@ -1,5 +1,5 @@
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
-import { RunnableLambda } from "@langchain/core/runnables";
+import { RunnableBinding, RunnableLambda } from "@langchain/core/runnables";
 import { fakeModel } from "@langchain/core/testing";
 import { tool } from "@langchain/core/tools";
 import { FakeListChatModel, FakeRetriever } from "@langchain/core/utils/testing";
@@ -256,6 +256,68 @@ describe("real LangChain and LangGraph execution", () => {
 });
 
 describe("protected native LangChain runnable", () => {
+  it("preserves pre-bound native defaults for invoke, batch and streaming", async () => {
+    const { firewall, calls } = recordingFirewall();
+    const underlying = echoModel();
+    const bound = underlying.withConfig({ configurable: { thread_id: "saved-thread" } });
+    const originalBound = (bound as unknown as { bound: unknown }).bound;
+    const model = await protectLangChainRunnable(firewall, bound, { hooks: ALL_HOOKS });
+    await model.invoke("saved invoke");
+    await model.batch(["saved batch one", "saved batch two"]);
+    const stream = await model.stream("saved stream");
+    for await (const _chunk of stream) { /* consume */ }
+    expect(calls.length).toBeGreaterThanOrEqual(7);
+    expect(calls.every((call) => call.conversationId === "saved-thread")).toBe(true);
+    expect((bound as unknown as { bound: unknown }).bound).toBe(originalBound);
+  });
+
+  it("keeps native overrides authoritative over nested saved defaults, ambient config and metadata", async () => {
+    const { firewall, calls } = recordingFirewall();
+    const inner = echoModel().withConfig({ configurable: { thread_id: "inner-default" } });
+    const bound = new RunnableBinding({ bound: inner, config: { configurable: { thread_id: "outer-default" } } });
+    const model = await protectLangChainRunnable(firewall, bound, { hooks: ALL_HOOKS });
+    await model.invoke("default");
+    expect(calls.every((call) => call.conversationId === "outer-default")).toBe(true);
+    const first = calls.length;
+    const parent = RunnableLambda.from(async () => model.invoke("override", {
+      configurable: { thread_id: "explicit-thread" }, metadata: { thread_id: "wrong" },
+    }));
+    await parent.invoke("start", { configurable: { thread_id: "ambient-thread" } });
+    expect(calls.slice(first).map((call) => call.conversationId)).toEqual(["explicit-thread", "explicit-thread"]);
+    const batchFirst = calls.length;
+    await model.batch(["override-a", "override-b", "default-item"], [
+      { configurable: { thread_id: "batch-a" } }, { configurable: { thread_id: "batch-b" } }, {},
+    ]);
+    for (const call of calls.slice(batchFirst)) {
+      expect(call.conversationId).toBe(call.text.includes("override-a") ? "batch-a" : call.text.includes("override-b") ? "batch-b" : "outer-default");
+    }
+    const invalid = calls.length;
+    await model.invoke("independent", { configurable: { thread_id: "" }, metadata: { thread_id: "wrong" } });
+    expect(calls.slice(invalid).every((call) => call.conversationId === undefined)).toBe(true);
+  });
+
+  it("executes existing config factories once and preserves native callbacks and retry settings", async () => {
+    const { firewall, calls } = recordingFirewall();
+    const observer = { name: "observer", handleLLMEnd: vi.fn() };
+    const factory = vi.fn(async () => ({ configurable: { thread_id: "factory-thread" }, callbacks: [observer] }));
+    const bound = new RunnableBinding({ bound: echoModel(), config: {}, configFactories: [factory] }).withRetry({ stopAfterAttempt: 2 });
+    // Native withRetry drops factories, so test the factory-bearing binding as
+    // its own outer layer while retaining an already configured retry wrapper.
+    const configured = new RunnableBinding({ bound, config: {}, configFactories: [factory] });
+    const model = await protectLangChainRunnable(firewall, configured, { hooks: ALL_HOOKS });
+    await model.invoke("invoke");
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(observer.handleLLMEnd).toHaveBeenCalledTimes(1);
+    expect(calls.map((call) => call.conversationId)).toEqual(["factory-thread", "factory-thread"]);
+    await model.batch(["batch-one", "batch-two"], [{}, {}]);
+    expect(factory).toHaveBeenCalledTimes(3);
+    expect(observer.handleLLMEnd).toHaveBeenCalledTimes(3);
+    const stream = await model.stream("stream");
+    for await (const _chunk of stream) { /* consume */ }
+    expect(factory).toHaveBeenCalledTimes(4);
+    expect(calls.every((call) => call.conversationId === "factory-thread")).toBe(true);
+  });
+
   it("captures direct-root and hidden nested overrides without caller conversation options", async () => {
     const { firewall, calls } = recordingFirewall();
     const model = await protectLangChainRunnable(firewall, echoModel(), { hooks: ALL_HOOKS });

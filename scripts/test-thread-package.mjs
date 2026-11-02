@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { RunnableBinding } from "@langchain/core/runnables";
 import { HumanMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { END, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
@@ -44,13 +45,40 @@ async function verify(suite) {
   assert.equal(payloads.length - first, 2);
   assert.ok(payloads.slice(first).every((event) => event.metadata.conversationId === "bound-root"));
 
+  const saved = await suite.protectLangChainRunnable(fw, model.withConfig({ configurable: { thread_id: "saved-native" } }), { hooks: ALL_HOOKS });
+  const savedFirst = payloads.length;
+  await saved.invoke("saved root");
+  assert.equal(payloads.length - savedFirst, 2);
+  assert.ok(payloads.slice(savedFirst).every((event) => event.metadata.conversationId === "saved-native"));
+
+  const savedBatchFirst = payloads.length;
+  await saved.batch(["saved batch", "native override"], [{}, { configurable: { thread_id: "batch-override" } }]);
+  assert.equal(payloads.length - savedBatchFirst, 4);
+  assert.deepEqual(new Set(payloads.slice(savedBatchFirst).map((event) => event.metadata.conversationId)), new Set(["saved-native", "batch-override"]));
+  const savedStreamFirst = payloads.length;
+  const savedStream = await saved.stream("saved streaming");
+  for await (const _chunk of savedStream) { /* consume */ }
+  assert.ok(payloads.length > savedStreamFirst);
+  assert.ok(payloads.slice(savedStreamFirst).every((event) => event.metadata.conversationId === "saved-native"));
+  let nativeFactoryCalls = 0;
+  const dynamic = new RunnableBinding({ bound: model, config: {}, configFactories: [() => {
+    nativeFactoryCalls++;
+    return { configurable: { thread_id: "dynamic-native" } };
+  }] });
+  const protectedDynamic = await suite.protectLangChainRunnable(fw, dynamic, { hooks: ALL_HOOKS });
+  const dynamicFirst = payloads.length;
+  await protectedDynamic.invoke("dynamic config");
+  assert.equal(nativeFactoryCalls, 1);
+  assert.equal(payloads.length - dynamicFirst, 2);
+  assert.ok(payloads.slice(dynamicFirst).every((event) => event.metadata.conversationId === "dynamic-native"));
+
   const agent = suite.createProtectedDeepAgent(fw, { model: new FakeListChatModel({ responses: ["done"] }) });
   const deepFirst = payloads.length;
   await agent.invoke({ messages: [new HumanMessage("research")] }, { configurable: { thread_id: "deep-native" } });
   assert.ok(payloads.length - deepFirst >= 2);
   assert.ok(payloads.slice(deepFirst).every((event) => event.metadata.conversationId === "deep-native"));
   assert.equal(new Set(payloads.map((event) => event.metadata.silmaril.request_id)).size, payloads.length);
-  assert.ok(payloads.every((event) => event.metadata.silmaril.sdk_version === "0.8.0"));
+  assert.ok(payloads.every((event) => event.metadata.silmaril.sdk_version === "0.8.1"));
   console.log(`${suite.name}: built native-thread graph, runnable, Deep Agents and request-ID checks passed`);
 }
 
