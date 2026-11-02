@@ -45,11 +45,11 @@ function reconstructToolMessages(messages: readonly ToolMessage[]): ToolMessage[
 describe("Deep Agents middleware", () => {
   it("blocks a tool call before execution and preserves its ID", async () => {
     const { firewall, calls } = firewallWithDecisions();
-    const middleware = createDeepAgentsMiddleware(firewall, { conversationId: "conversation-1" });
+    const middleware = createDeepAgentsMiddleware(firewall);
     const handler = vi.fn(async () => new ToolMessage({ content: "safe", tool_call_id: "call-1" }));
     const request = {
       toolCall: { id: "call-1", name: "search", args: { query: "deny" } },
-      state: { messages: [] }, runtime: {},
+      state: { messages: [] }, runtime: { configurable: { thread_id: "conversation-1" } },
     };
     const result = await middleware.wrapToolCall!(request as never, handler as never);
     expect(handler).not.toHaveBeenCalled();

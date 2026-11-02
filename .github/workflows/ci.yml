@@ -48,3 +48,33 @@ jobs:
 
       - name: Pack dry run
         run: npm pack --dry-run
+
+  framework-compatibility:
+    name: Framework ${{ matrix.framework }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [langchain-minimum, deepagents-minimum, current]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - name: Install minimum standalone LangChain
+        if: matrix.framework == 'langchain-minimum'
+        run: npm install --ignore-scripts --no-save --package-lock=false --legacy-peer-deps @langchain/core@0.3.0
+      - name: Test minimum standalone LangChain
+        if: matrix.framework == 'langchain-minimum'
+        run: npx vitest run test/langchain.test.ts test/langchain-minimum.test.ts
+      - name: Install minimum agent dependencies
+        if: matrix.framework == 'deepagents-minimum'
+        run: npm install --ignore-scripts --no-save --package-lock=false @langchain/core@1.2.9 @langchain/langgraph@1.4.10 @langchain/langgraph-sdk@1.9.23 langchain@1.5.10 deepagents@1.14.1
+      - name: Install current compatible agent dependencies
+        if: matrix.framework == 'current'
+        run: npm install --ignore-scripts --no-save --package-lock=false '@langchain/core@latest' '@langchain/langgraph@^1.4.10' 'langchain@^1.5.10' 'deepagents@^1.14.1'
+      - name: Test actual agent and graph integrations
+        if: matrix.framework != 'langchain-minimum'
+        run: npx vitest run test/langchain-minimum.test.ts test/thread-identity.test.ts test/deepagents-graph.test.ts test/deepagents.test.ts test/langchain.test.ts

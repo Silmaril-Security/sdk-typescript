@@ -2,6 +2,7 @@
 
 /** Optional Deep Agents integration. Import from @silmaril-security/sdk/adapters/deepagents. */
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { ensureConfig } from "@langchain/core/runnables";
 import { Command } from "@langchain/langgraph";
 import { createDeepAgent, GENERAL_PURPOSE_SUBAGENT, type AnySubAgent, type CompiledSubAgent } from "deepagents";
 import { createAgent, createMiddleware, type CreateAgentParams } from "langchain";
@@ -11,6 +12,8 @@ import { isReviewCompatibilityError } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
 import { validateMode } from "../modes.js";
 import type { ClassifyEvent, FirewallMode } from "../types.js";
+
+import { nativeThreadId, rejectConversationOptions } from "./thread-identity.js";
 
 export const SAFE_TOOL_MESSAGE = "Silmaril Firewall blocked this tool interaction. Choose a different safe action.";
 export const SAFE_FINAL_MESSAGE = "Silmaril Firewall stopped this request after repeated unsafe actions.";
@@ -25,8 +28,6 @@ export interface DeepAgentsMiddlewareOptions {
   mode?: FirewallMode;
   failOpen?: boolean;
   maxBlockedAttempts?: number;
-  /** A caller-supplied sequence identity; never derived from a LangChain run ID. */
-  conversationId?: string;
   onClassify?: (event: ClassifyEvent) => void;
 }
 
@@ -67,19 +68,20 @@ function stripAllowedMarker(result: ToolMessage | Command): ToolMessage | Comman
 }
 
 export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgentsMiddlewareOptions = {}) {
+  rejectConversationOptions(options);
   const maxBlockedAttempts = options.maxBlockedAttempts ?? 3;
   if (!Number.isInteger(maxBlockedAttempts) || maxBlockedAttempts < 1) {
     throw new Error("maxBlockedAttempts must be a positive integer");
   }
   const effectiveMode = validateMode(options.mode) ?? firewall.mode;
-  const classify = async (text: string, hook: HookLabel, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined }> => {
+  const classify = async (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined }> => {
     if (!text.trim()) return { enforce: false, mode: effectiveMode };
     try {
       const result = await firewall.classify(text, {
         hook,
         ...(toolName === undefined ? {} : { toolName }),
         ...(effectiveMode === undefined ? {} : { mode: effectiveMode }),
-        ...(options.conversationId === undefined ? {} : { metadata: { conversationId: options.conversationId } }),
+        ...(conversationId === undefined ? {} : { metadata: { conversationId } }),
       });
       const mode = effectiveMode ?? result.mode ?? "block";
       const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
@@ -101,6 +103,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
   return createMiddleware({
     name: "SilmarilDeepAgentsMiddleware",
     wrapModelCall: async (request, handler) => {
+      const conversationId = nativeThreadId(request.runtime, undefined, undefined, ensureConfig());
       const history = request.state.messages;
       let lastUserIndex = -1;
       for (let i = history.length - 1; i >= 0; i--) {
@@ -115,7 +118,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
       ).length;
       const latestUser = [...request.messages].reverse().find(HumanMessage.isInstance);
       const inputDecision = latestUser
-        ? await classify(textOf(latestUser), HookLabel.USER_INPUT)
+        ? await classify(textOf(latestUser), HookLabel.USER_INPUT, conversationId)
         : undefined;
       if (inputDecision?.enforce) return new AIMessage(SAFE_OUTPUT_MESSAGE);
       const capMode = effectiveMode ?? inputDecision?.mode ?? "block";
@@ -124,15 +127,16 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         return new AIMessage(SAFE_FINAL_MESSAGE);
       }
       const response = await handler(request);
-      if (response instanceof Command && (await classify(textOfStructuredValue(response.update), HookLabel.LLM_OUTPUT)).enforce) {
+      if (response instanceof Command && (await classify(textOfStructuredValue(response.update), HookLabel.LLM_OUTPUT, conversationId)).enforce) {
         return new AIMessage(SAFE_OUTPUT_MESSAGE);
       }
-      if (AIMessage.isInstance(response) && (await classify(textOf(response), HookLabel.LLM_OUTPUT)).enforce) {
+      if (AIMessage.isInstance(response) && (await classify(textOf(response), HookLabel.LLM_OUTPUT, conversationId)).enforce) {
         return new AIMessage(SAFE_OUTPUT_MESSAGE);
       }
       return response;
     },
     wrapToolCall: async (request, handler) => {
+      const conversationId = nativeThreadId(request.runtime, undefined, undefined, ensureConfig());
       const safe = () => {
         const message = new ToolMessage({
           content: SAFE_TOOL_MESSAGE,
@@ -143,7 +147,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         issuedBlockedMessages.add(message);
         return message;
       };
-      if ((await classify(JSON.stringify(request.toolCall.args ?? {}), HookLabel.TOOL_CALL, request.toolCall.name)).enforce) {
+      if ((await classify(JSON.stringify(request.toolCall.args ?? {}), HookLabel.TOOL_CALL, conversationId, request.toolCall.name)).enforce) {
         return safe();
       }
       const result = await handler(request);
@@ -154,10 +158,10 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
       } catch {
         // Content cannot be inspected, but the backend still resolves the
         // enforcement mode. Observation modes retain the original result.
-        const decision = await classify("[uninspectable tool result]", HookLabel.TOOL_RESPONSE, request.toolCall.name);
+        const decision = await classify("[uninspectable tool result]", HookLabel.TOOL_RESPONSE, conversationId, request.toolCall.name);
         return decision.mode === "block" ? safe() : stripAllowedMarker(result);
       }
-      if ((await classify(resultText, HookLabel.TOOL_RESPONSE, request.toolCall.name)).enforce) {
+      if ((await classify(resultText, HookLabel.TOOL_RESPONSE, conversationId, request.toolCall.name)).enforce) {
         return safe();
       }
       return stripAllowedMarker(result);
@@ -174,6 +178,7 @@ export interface ProtectedCompiledSubagentOptions extends Omit<CreateAgentParams
 
 /** Compile a subagent with Silmaril middleware and register that exact graph. */
 export function createProtectedCompiledSubagent(firewall: Firewall, options: ProtectedCompiledSubagentOptions): CompiledSubAgent {
+  rejectConversationOptions(options);
   const { name, description, silmaril, middleware = [], ...agentOptions } = options;
   const runnable = createAgent({
     ...agentOptions,
@@ -193,6 +198,7 @@ export interface ProtectedDeepAgentOptions extends Omit<NonNullable<Parameters<t
 
 /** Protect root, default general-purpose, and declarative subagents. */
 export function createProtectedDeepAgent(firewall: Firewall, options: ProtectedDeepAgentOptions = {}) {
+  rejectConversationOptions(options);
   const { silmaril, subagents = [], protectedCompiledSubagents = [], middleware = [], ...agentOptions } = options;
   const protectedSubagents = subagents.map((subagent) => {
     if ("runnable" in subagent || "graphId" in subagent) {
