@@ -9,6 +9,13 @@ export function validThreadId(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+const NO_THREAD_IDS: readonly string[] = Object.freeze([]);
+
+function threadIds(first?: string, second?: string): readonly string[] {
+  if (first === undefined) return second === undefined ? NO_THREAD_IDS : Object.freeze([second]);
+  return Object.freeze(second === undefined || second === first ? [first] : [first, second]);
+}
+
 /** Native config is authoritative, including an explicitly invalid/empty ID. */
 export function nativeThreadId(runtime?: unknown, metadata?: unknown, inherited?: string, currentConfig?: unknown): string | undefined {
   const explicit = record(record(runtime)?.configurable);
@@ -29,7 +36,10 @@ export function rejectConversationOptions(options: object): void {
 
 interface RunIdentity {
   threadId: string | undefined;
+  /** At most two ordinary candidates deeper children must not re-accept. */
+  untrustedThreadIds: readonly string[];
   parentRunId: string | undefined;
+  graphProven: boolean;
 }
 
 /** State belongs to callback runs, never to a reusable agent or current user. */
@@ -48,17 +58,58 @@ export class RunThreadIdentity {
       const oldestRoot = [...this.runs].find(([, run]) => run.parentRunId === undefined || !this.runs.has(run.parentRunId))?.[0] ?? this.runs.keys().next().value;
       if (oldestRoot !== undefined) discarded.push(...this.finish(oldestRoot));
     }
-    const inherited = parentRunId === undefined ? undefined : this.runs.get(parentRunId)?.threadId;
+    const parent = parentRunId === undefined ? undefined : this.runs.get(parentRunId);
+    const inherited = parent?.threadId;
     const exposed = record(metadata);
+    const hasExposedThread = exposed !== undefined
+      && Object.prototype.hasOwnProperty.call(exposed, "thread_id");
+    const candidate = hasExposedThread ? validThreadId(exposed.thread_id) : undefined;
     // Ordinary callbacks may see a parent's ambient config while a child has a
     // hidden per-call override. Only graph-tagged metadata proves that context.
-    const threadId = this.boundIdentity && (parentRunId === undefined || !this.runs.has(parentRunId)) ? this.boundIdentity.threadId
-      : exposed && Object.prototype.hasOwnProperty.call(exposed, "thread_id")
-        ? typeof exposed.langgraph_node === "string"
-          ? nativeThreadId(undefined, exposed, inherited, this.currentConfig())
-          : validThreadId(exposed.thread_id)
-        : inherited;
-    this.runs.set(runId, { threadId, parentRunId });
+    let threadId: string | undefined;
+    let untrustedThreadIds: readonly string[];
+    let graphProven: boolean;
+    if (this.boundIdentity && parent === undefined) {
+      threadId = this.boundIdentity.threadId;
+      untrustedThreadIds = threadIds(threadId, candidate);
+      graphProven = false;
+    } else if (exposed && (
+      typeof exposed.langgraph_node === "string"
+      || typeof exposed.langgraph_step === "number"
+    )) {
+      threadId = nativeThreadId(undefined, exposed, inherited, this.currentConfig());
+      untrustedThreadIds = NO_THREAD_IDS;
+      graphProven = true;
+    } else if (hasExposedThread) {
+      if (candidate === undefined) {
+        threadId = undefined;
+        untrustedThreadIds = NO_THREAD_IDS;
+        graphProven = false;
+      } else if (parent?.graphProven && candidate === inherited) {
+        threadId = inherited;
+        untrustedThreadIds = NO_THREAD_IDS;
+        graphProven = true;
+      } else if (parent && (
+        candidate === inherited || parent.untrustedThreadIds.includes(candidate)
+      )) {
+        threadId = undefined;
+        untrustedThreadIds = parent.untrustedThreadIds;
+        graphProven = false;
+      } else {
+        threadId = candidate;
+        untrustedThreadIds = threadIds(candidate);
+        graphProven = false;
+      }
+    } else if (parent?.graphProven) {
+      threadId = inherited;
+      untrustedThreadIds = NO_THREAD_IDS;
+      graphProven = true;
+    } else {
+      threadId = undefined;
+      untrustedThreadIds = parent?.untrustedThreadIds ?? NO_THREAD_IDS;
+      graphProven = false;
+    }
+    this.runs.set(runId, { threadId, untrustedThreadIds, parentRunId, graphProven });
     if (parentRunId !== undefined && parentRunId !== runId) {
       const children = this.children.get(parentRunId) ?? new Set<string>();
       children.add(runId);

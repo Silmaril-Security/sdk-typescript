@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.2
+
+- Omit ambiguous callback-only child conversation attribution when ordinary
+  metadata repeats an unresolved native-root or metadata candidate, including
+  after missing or alternating metadata in deeper callbacks, while preserving
+  protected-root, graph-proven, distinct child, and concurrent identities.
+- Verify model-start and model-end behavior in source and built ESM/CJS package
+  regressions using forwarded parent metadata and hidden child-native config.
+
 ## 0.8.1
 
 - Preserve native thread defaults and config factories on runnables configured

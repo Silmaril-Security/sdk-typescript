@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { RunnableBinding } from "@langchain/core/runnables";
+import { RunnableBinding, RunnableLambda } from "@langchain/core/runnables";
 import { HumanMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { END, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
@@ -37,13 +37,77 @@ async function verify(suite) {
     assert.equal(events.length, 2);
     assert.ok(events.every((event) => event.metadata.conversationId === thread));
   }
+
+  const callbackInner = RunnableLambda.from(async (_input, config) => model.invoke("callback child", {
+    ...config,
+    configurable: { ...config?.configurable, thread_id: "callback-child" },
+  }));
+  const callbackOuter = RunnableLambda.from(async (_input, config) => callbackInner.invoke("callback middle", config));
+  const callbackFirst = payloads.length;
+  await callbackOuter.invoke("callback parent", {
+    callbacks: [handler],
+    configurable: { thread_id: "callback-parent" },
+    metadata: { thread_id: "callback-parent" },
+  });
+  assert.equal(payloads.length - callbackFirst, 2);
+  assert.deepEqual(payloads.slice(callbackFirst).map((event) => event.hook), ["user_input", "llm_output"]);
+  assert.ok(payloads.slice(callbackFirst).every((event) => event.metadata.conversationId === undefined));
+
+  const parentMetadata = { thread_id: "callback-parent" };
+  const callbackAfterMissing = RunnableLambda.from(async (_input, config) => model.invoke("callback after missing", {
+    ...config,
+    metadata: parentMetadata,
+    configurable: { ...config?.configurable, thread_id: "callback-child" },
+  }));
+  const callbackMissingOuter = RunnableLambda.from(async (_input, config) => callbackAfterMissing.invoke("callback missing", {
+    ...config, metadata: {},
+  }));
+  const callbackMissingFirst = payloads.length;
+  await callbackMissingOuter.invoke("callback missing parent", {
+    callbacks: [handler],
+    configurable: { thread_id: "callback-parent" },
+    metadata: parentMetadata,
+  });
+  assert.equal(payloads.length - callbackMissingFirst, 2);
+  assert.deepEqual(payloads.slice(callbackMissingFirst).map((event) => event.hook), ["user_input", "llm_output"]);
+  assert.ok(payloads.slice(callbackMissingFirst).every((event) => event.metadata.conversationId === undefined));
+
   const protectedModel = await suite.protectLangChainRunnable(fw, model, { hooks: ALL_HOOKS });
+  const protectedParent = RunnableLambda.from(async (_input, config) => protectedModel.invoke("protected child", {
+    ...config,
+    configurable: { ...config?.configurable, thread_id: "protected-child" },
+  }));
+  const protectedChildFirst = payloads.length;
+  await protectedParent.invoke("protected parent", {
+    configurable: { thread_id: "protected-parent" },
+    metadata: { thread_id: "protected-parent" },
+  });
+  assert.equal(payloads.length - protectedChildFirst, 2);
+  assert.deepEqual(payloads.slice(protectedChildFirst).map((event) => event.hook), ["user_input", "llm_output"]);
+  assert.ok(payloads.slice(protectedChildFirst).every((event) => event.metadata.conversationId === "protected-child"));
+
+  const protectedOuter = await suite.protectLangChainRunnable(fw, RunnableLambda.from(async (_input, config) => {
+    return model.invoke("bare child", {
+      ...config,
+      metadata: { thread_id: "native-a" },
+      configurable: { ...config?.configurable, thread_id: "hidden-c" },
+    });
+  }), { hooks: ALL_HOOKS });
+  const protectedOuterFirst = payloads.length;
+  await protectedOuter.invoke("protected outer", {
+    configurable: { thread_id: "native-a" },
+    metadata: { thread_id: "stale-b" },
+  });
+  assert.equal(payloads.length - protectedOuterFirst, 2);
+  assert.deepEqual(payloads.slice(protectedOuterFirst).map((event) => event.hook), ["user_input", "llm_output"]);
+  assert.ok(payloads.slice(protectedOuterFirst).every((event) => event.metadata.conversationId === undefined));
+
   const first = payloads.length;
   await protectedModel.withListeners({ onEnd: () => {} }).invoke("root", {
-    configurable: { thread_id: "bound-root" }, metadata: { thread_id: "wrong" },
+    configurable: { thread_id: "native-a" }, metadata: { thread_id: "stale-b" },
   });
   assert.equal(payloads.length - first, 2);
-  assert.ok(payloads.slice(first).every((event) => event.metadata.conversationId === "bound-root"));
+  assert.ok(payloads.slice(first).every((event) => event.metadata.conversationId === "native-a"));
 
   const saved = await suite.protectLangChainRunnable(fw, model.withConfig({ configurable: { thread_id: "saved-native" } }), { hooks: ALL_HOOKS });
   const savedFirst = payloads.length;
@@ -91,7 +155,7 @@ async function verify(suite) {
   assert.ok(payloads.length - deepFirst >= 2);
   assert.ok(payloads.slice(deepFirst).every((event) => event.metadata.conversationId === "deep-native"));
   assert.equal(new Set(payloads.map((event) => event.metadata.silmaril.request_id)).size, payloads.length);
-  assert.ok(payloads.every((event) => event.metadata.silmaril.sdk_version === "0.8.1"));
+  assert.ok(payloads.every((event) => event.metadata.silmaril.sdk_version === "0.8.2"));
   console.log(`${suite.name}: built native-thread graph, runnable, Deep Agents and request-ID checks passed`);
 }
 
