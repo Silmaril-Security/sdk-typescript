@@ -89,13 +89,14 @@ async function verify(suite) {
   const protectedOuter = await suite.protectLangChainRunnable(fw, RunnableLambda.from(async (_input, config) => {
     return model.invoke("bare child", {
       ...config,
-      configurable: { ...config?.configurable, thread_id: "bare-child" },
+      metadata: { thread_id: "native-a" },
+      configurable: { ...config?.configurable, thread_id: "hidden-c" },
     });
   }), { hooks: ALL_HOOKS });
   const protectedOuterFirst = payloads.length;
   await protectedOuter.invoke("protected outer", {
-    configurable: { thread_id: "protected-outer" },
-    metadata: { thread_id: "protected-outer" },
+    configurable: { thread_id: "native-a" },
+    metadata: { thread_id: "stale-b" },
   });
   assert.equal(payloads.length - protectedOuterFirst, 2);
   assert.deepEqual(payloads.slice(protectedOuterFirst).map((event) => event.hook), ["user_input", "llm_output"]);
@@ -103,10 +104,10 @@ async function verify(suite) {
 
   const first = payloads.length;
   await protectedModel.withListeners({ onEnd: () => {} }).invoke("root", {
-    configurable: { thread_id: "bound-root" }, metadata: { thread_id: "wrong" },
+    configurable: { thread_id: "native-a" }, metadata: { thread_id: "stale-b" },
   });
   assert.equal(payloads.length - first, 2);
-  assert.ok(payloads.slice(first).every((event) => event.metadata.conversationId === "bound-root"));
+  assert.ok(payloads.slice(first).every((event) => event.metadata.conversationId === "native-a"));
 
   const saved = await suite.protectLangChainRunnable(fw, model.withConfig({ configurable: { thread_id: "saved-native" } }), { hooks: ALL_HOOKS });
   const savedFirst = payloads.length;

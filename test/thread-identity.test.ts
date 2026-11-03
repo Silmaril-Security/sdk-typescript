@@ -75,18 +75,26 @@ describe("native thread identity", () => {
     expect(threads.get("orphan")).toBe("parent-thread");
   });
 
-  it("limits bound native authority to its root", () => {
-    const threads = new RunThreadIdentity({ threadId: "bound-root" });
-    threads.start("root", undefined, { thread_id: "bound-root" });
+  it("retains bound native and stale metadata candidates through ambiguous descendants", () => {
+    const threads = new RunThreadIdentity({ threadId: "native-a" });
+    threads.start("root", undefined, { thread_id: "stale-b" });
     threads.start("missing-child", "root");
-    threads.start("repeated-child", "root", { thread_id: "bound-root" });
-    threads.start("repeated-grandchild", "repeated-child", { thread_id: "bound-root" });
-    threads.start("distinct-child", "root", { thread_id: "child-native" });
-    expect(threads.get("root")).toBe("bound-root");
+    threads.start("native-child", "root", { thread_id: "native-a" });
+    threads.start("metadata-child", "root", { thread_id: "stale-b" });
+    threads.start("alternating-b", "native-child", { thread_id: "stale-b" });
+    threads.start("alternating-a", "alternating-b", { thread_id: "native-a" });
+    threads.start("missing-grandchild", "alternating-a");
+    threads.start("after-missing", "missing-grandchild", { thread_id: "stale-b" });
+    threads.start("distinct-child", "after-missing", { thread_id: "distinct-c" });
+    expect(threads.get("root")).toBe("native-a");
     expect(threads.get("missing-child")).toBeUndefined();
-    expect(threads.get("repeated-child")).toBeUndefined();
-    expect(threads.get("repeated-grandchild")).toBeUndefined();
-    expect(threads.get("distinct-child")).toBe("child-native");
+    expect(threads.get("native-child")).toBeUndefined();
+    expect(threads.get("metadata-child")).toBeUndefined();
+    expect(threads.get("alternating-b")).toBeUndefined();
+    expect(threads.get("alternating-a")).toBeUndefined();
+    expect(threads.get("missing-grandchild")).toBeUndefined();
+    expect(threads.get("after-missing")).toBeUndefined();
+    expect(threads.get("distinct-child")).toBe("distinct-c");
   });
 
   it("inherits graph-proven identity from step zero without requiring exposed thread metadata", () => {
@@ -452,22 +460,31 @@ describe("protected native LangChain runnable", () => {
     expect(calls.every((call) => call.conversationId === "child-native")).toBe(true);
   });
 
-  it("does not propagate a protected outer root identity into an ambiguous bare child", async () => {
+  it("keeps a protected root native ID but omits it from an ambiguous bare child", async () => {
     const { firewall, calls } = recordingFirewall();
+    const root = await protectLangChainRunnable(firewall, echoModel(), { hooks: ALL_HOOKS });
+    await root.invoke("root", {
+      configurable: { thread_id: "native-a" },
+      metadata: { thread_id: "stale-b" },
+    });
+    expect(calls.map((call) => call.conversationId)).toEqual(["native-a", "native-a"]);
+
     const bareModel = echoModel();
     const outer = await protectLangChainRunnable(firewall, RunnableLambda.from(async (_input: string, config) => {
       return bareModel.invoke("child", {
         ...config,
-        configurable: { ...config?.configurable, thread_id: "child-native" },
+        metadata: { thread_id: "native-a" },
+        configurable: { ...config?.configurable, thread_id: "hidden-c" },
       });
     }), { hooks: ALL_HOOKS });
+    const first = calls.length;
     await outer.invoke("start", {
-      configurable: { thread_id: "parent-native" },
-      metadata: { thread_id: "parent-native" },
+      configurable: { thread_id: "native-a" },
+      metadata: { thread_id: "stale-b" },
     });
-    expect(calls).toHaveLength(2);
-    expect(calls.map((call) => call.hook)).toEqual([HookLabel.USER_INPUT, HookLabel.LLM_OUTPUT]);
-    expect(calls.every((call) => call.conversationId === undefined)).toBe(true);
+    expect(calls.slice(first)).toHaveLength(2);
+    expect(calls.slice(first).map((call) => call.hook)).toEqual([HookLabel.USER_INPUT, HookLabel.LLM_OUTPUT]);
+    expect(calls.slice(first).every((call) => call.conversationId === undefined)).toBe(true);
   });
 
   it("uses a separately executing child graph’s native thread instead of the wrapped parent", async () => {
