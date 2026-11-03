@@ -3,9 +3,9 @@
 ## 0.8.2
 
 - Omit ambiguous callback-only child conversation attribution when ordinary
-  metadata merely repeats an unproven parent thread or is absent, while
-  preserving native protected-root, graph-proven, distinct child, and
-  concurrent identities.
+  metadata merely repeats an unproven parent thread or is absent, including
+  through deeper nested callbacks, while preserving native protected-root,
+  graph-proven, distinct child, and concurrent identities.
 - Verify model-start and model-end behavior in source and built ESM/CJS package
   regressions using forwarded parent metadata and hidden child-native config.
 

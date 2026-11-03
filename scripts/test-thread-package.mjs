@@ -38,12 +38,13 @@ async function verify(suite) {
     assert.ok(events.every((event) => event.metadata.conversationId === thread));
   }
 
-  const callbackParent = RunnableLambda.from(async (_input, config) => model.invoke("callback child", {
+  const callbackInner = RunnableLambda.from(async (_input, config) => model.invoke("callback child", {
     ...config,
     configurable: { ...config?.configurable, thread_id: "callback-child" },
   }));
+  const callbackOuter = RunnableLambda.from(async (_input, config) => callbackInner.invoke("callback middle", config));
   const callbackFirst = payloads.length;
-  await callbackParent.invoke("callback parent", {
+  await callbackOuter.invoke("callback parent", {
     callbacks: [handler],
     configurable: { thread_id: "callback-parent" },
     metadata: { thread_id: "callback-parent" },
@@ -51,6 +52,25 @@ async function verify(suite) {
   assert.equal(payloads.length - callbackFirst, 2);
   assert.deepEqual(payloads.slice(callbackFirst).map((event) => event.hook), ["user_input", "llm_output"]);
   assert.ok(payloads.slice(callbackFirst).every((event) => event.metadata.conversationId === undefined));
+
+  const parentMetadata = { thread_id: "callback-parent" };
+  const callbackAfterMissing = RunnableLambda.from(async (_input, config) => model.invoke("callback after missing", {
+    ...config,
+    metadata: parentMetadata,
+    configurable: { ...config?.configurable, thread_id: "callback-child" },
+  }));
+  const callbackMissingOuter = RunnableLambda.from(async (_input, config) => callbackAfterMissing.invoke("callback missing", {
+    ...config, metadata: {},
+  }));
+  const callbackMissingFirst = payloads.length;
+  await callbackMissingOuter.invoke("callback missing parent", {
+    callbacks: [handler],
+    configurable: { thread_id: "callback-parent" },
+    metadata: parentMetadata,
+  });
+  assert.equal(payloads.length - callbackMissingFirst, 2);
+  assert.deepEqual(payloads.slice(callbackMissingFirst).map((event) => event.hook), ["user_input", "llm_output"]);
+  assert.ok(payloads.slice(callbackMissingFirst).every((event) => event.metadata.conversationId === undefined));
 
   const protectedModel = await suite.protectLangChainRunnable(fw, model, { hooks: ALL_HOOKS });
   const protectedParent = RunnableLambda.from(async (_input, config) => protectedModel.invoke("protected child", {

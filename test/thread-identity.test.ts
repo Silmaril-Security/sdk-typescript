@@ -61,11 +61,15 @@ describe("native thread identity", () => {
     threads.start("ordinary-parent", undefined, { thread_id: "parent-thread" });
     threads.start("ambiguous-child", "ordinary-parent", { thread_id: "parent-thread" });
     threads.start("missing-child", "ordinary-parent");
+    threads.start("ambiguous-grandchild", "ambiguous-child", { thread_id: "parent-thread" });
+    threads.start("after-missing", "missing-child", { thread_id: "parent-thread" });
     threads.start("distinct-child", "ordinary-parent", { thread_id: "child-thread" });
     threads.start("invalid-child", "ordinary-parent", { thread_id: "" });
     threads.start("orphan", "unknown-parent", { thread_id: "parent-thread" });
     expect(threads.get("ambiguous-child")).toBeUndefined();
     expect(threads.get("missing-child")).toBeUndefined();
+    expect(threads.get("ambiguous-grandchild")).toBeUndefined();
+    expect(threads.get("after-missing")).toBeUndefined();
     expect(threads.get("distinct-child")).toBe("child-thread");
     expect(threads.get("invalid-child")).toBeUndefined();
     expect(threads.get("orphan")).toBe("parent-thread");
@@ -73,13 +77,15 @@ describe("native thread identity", () => {
 
   it("limits bound native authority to its root", () => {
     const threads = new RunThreadIdentity({ threadId: "bound-root" });
-    threads.start("root", undefined, { thread_id: "wrong" });
+    threads.start("root", undefined, { thread_id: "bound-root" });
     threads.start("missing-child", "root");
     threads.start("repeated-child", "root", { thread_id: "bound-root" });
+    threads.start("repeated-grandchild", "repeated-child", { thread_id: "bound-root" });
     threads.start("distinct-child", "root", { thread_id: "child-native" });
     expect(threads.get("root")).toBe("bound-root");
     expect(threads.get("missing-child")).toBeUndefined();
     expect(threads.get("repeated-child")).toBeUndefined();
+    expect(threads.get("repeated-grandchild")).toBeUndefined();
     expect(threads.get("distinct-child")).toBe("child-native");
   });
 
@@ -392,14 +398,38 @@ describe("protected native LangChain runnable", () => {
     const { firewall, calls } = recordingFirewall();
     const handler = await createLangChainHandler(firewall, { hooks: ALL_HOOKS });
     const model = echoModel();
-    const parent = RunnableLambda.from(async (_input: string, config) => model.invoke("child", {
+    const inner = RunnableLambda.from(async (_input: string, config) => model.invoke("child", {
       ...config,
       configurable: { ...config?.configurable, thread_id: "child-native" },
     }));
-    await parent.invoke("start", {
+    const outer = RunnableLambda.from(async (_input: string, config) => inner.invoke("middle", config));
+    await outer.invoke("start", {
       callbacks: [handler],
       configurable: { thread_id: "parent-native" },
       metadata: { thread_id: "parent-native" },
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.hook)).toEqual([HookLabel.USER_INPUT, HookLabel.LLM_OUTPUT]);
+    expect(calls.every((call) => call.conversationId === undefined)).toBe(true);
+  });
+
+  it("retains ambiguity through a metadata-absent runnable before a deeper model", async () => {
+    const { firewall, calls } = recordingFirewall();
+    const handler = await createLangChainHandler(firewall, { hooks: ALL_HOOKS });
+    const model = echoModel();
+    const parentMetadata = { thread_id: "parent-native" };
+    const inner = RunnableLambda.from(async (_input: string, config) => model.invoke("child", {
+      ...config,
+      metadata: parentMetadata,
+      configurable: { ...config?.configurable, thread_id: "child-native" },
+    }));
+    const outer = RunnableLambda.from(async (_input: string, config) => inner.invoke("middle", {
+      ...config, metadata: {},
+    }));
+    await outer.invoke("start", {
+      callbacks: [handler],
+      configurable: { thread_id: "parent-native" },
+      metadata: parentMetadata,
     });
     expect(calls).toHaveLength(2);
     expect(calls.map((call) => call.hook)).toEqual([HookLabel.USER_INPUT, HookLabel.LLM_OUTPUT]);
