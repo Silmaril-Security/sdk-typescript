@@ -34,10 +34,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-Pin version 0.8.2 for reproducible installs:
+Pin version 0.9.0 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.8.2
+npm install @silmaril-security/sdk@0.9.0
 ```
 
 Requires Node 20 or later.
@@ -824,6 +824,7 @@ IDs must be non-empty; MCP tools also require their canonical server parent ID.
 The compatibility metadata copy remains attribution only. Caller agent metadata
 does not supply an authenticated principal.
 
-Version 0.8.2 is published on
-[npm](https://www.npmjs.com/package/@silmaril-security/sdk/v/0.8.2) and as a
-[GitHub release](https://github.com/Silmaril-Security/sdk-typescript/releases/tag/v0.8.2).
+Published versions are listed on
+[npm](https://www.npmjs.com/package/@silmaril-security/sdk?activeTab=versions) and
+[GitHub Releases](https://github.com/Silmaril-Security/sdk-typescript/releases).
+Version 0.9.0 adds protected remote Deep Agents support.
