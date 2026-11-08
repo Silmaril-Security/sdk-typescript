@@ -8,6 +8,10 @@ terms in [LICENSE](LICENSE) and the repository's contribution process.
 
 Use Node 20 or later.
 
+CI tests the declared minimum Node version and each supported LTS line. Runtime
+lanes are retired intentionally when support ends; do not remove a lane only
+because a newer LTS line is added.
+
 ```sh
 npm install
 npm run lint

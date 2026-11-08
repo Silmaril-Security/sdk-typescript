@@ -9,6 +9,8 @@ import { createDeepAgentsMiddleware as createEsmDeepAgentsMiddleware } from
   "@silmaril-security/sdk/adapters/deepagents";
 import { createLangChainHandler as createEsmLangChainHandler } from
   "@silmaril-security/sdk/adapters/langchain";
+import { createMiddleware as createEsmVercelMiddleware } from
+  "@silmaril-security/sdk/adapters/vercel";
 
 const require = createRequire(import.meta.url);
 const {
@@ -20,6 +22,9 @@ const { createDeepAgentsMiddleware: createCjsDeepAgentsMiddleware } = require(
 );
 const { createLangChainHandler: createCjsLangChainHandler } = require(
   "@silmaril-security/sdk/adapters/langchain",
+);
+const { createMiddleware: createCjsVercelMiddleware } = require(
+  "@silmaril-security/sdk/adapters/vercel",
 );
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -174,6 +179,8 @@ async function runSuite(suite) {
 }
 
 try {
+  assert.equal(typeof createEsmVercelMiddleware, "function");
+  assert.equal(typeof createCjsVercelMiddleware, "function");
   await runSuite({
     name: "ESM",
     Firewall: EsmFirewall,
