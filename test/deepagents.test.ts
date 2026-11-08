@@ -283,7 +283,7 @@ describe("Deep Agents middleware", () => {
     const { firewall } = firewallWithDecisions();
     expect(() => createProtectedDeepAgent(firewall, { subagents: [
       { name: "compiled", description: "compiled", runnable: {} as never },
-    ] })).toThrow(/Compiled or remote subagents/);
+    ] })).toThrow(/Compiled subagents/);
   });
 
   it("reports Warn decisions without replacing model content", async () => {

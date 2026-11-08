@@ -71,10 +71,10 @@ jobs:
         run: npx vitest run test/langchain.test.ts test/langchain-minimum.test.ts
       - name: Install minimum agent dependencies
         if: matrix.framework == 'deepagents-minimum'
-        run: npm install --ignore-scripts --no-save --package-lock=false @langchain/core@1.2.9 @langchain/langgraph@1.4.10 @langchain/langgraph-sdk@1.9.23 langchain@1.5.10 deepagents@1.14.1
+        run: npm install --ignore-scripts --no-save --package-lock=false @langchain/core@1.2.14 @langchain/langgraph@1.4.10 @langchain/langgraph-sdk@1.9.23 @langchain/anthropic@1.5.12 @langchain/openai@1.6.2 langchain@1.5.10 deepagents@1.16.0
       - name: Install current compatible agent dependencies
         if: matrix.framework == 'current'
-        run: npm install --ignore-scripts --no-save --package-lock=false '@langchain/core@latest' '@langchain/langgraph@^1.4.10' 'langchain@^1.5.10' 'deepagents@^1.14.1'
+        run: npm install --ignore-scripts --no-save --package-lock=false '@langchain/core@latest' '@langchain/langgraph@^1.4.10' 'langchain@^1.5.10' 'deepagents@^1.16.0'
       - name: Test actual agent and graph integrations
         if: matrix.framework != 'langchain-minimum'
-        run: npx vitest run test/langchain-minimum.test.ts test/thread-identity.test.ts test/deepagents-graph.test.ts test/deepagents.test.ts test/langchain.test.ts
+        run: npx vitest run test/langchain-minimum.test.ts test/thread-identity.test.ts test/deepagents-graph.test.ts test/deepagents-remote.test.ts test/deepagents.test.ts test/langchain.test.ts

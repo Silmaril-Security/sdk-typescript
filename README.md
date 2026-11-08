@@ -63,10 +63,10 @@ Optional LangChain.js support:
 npm install @langchain/core @langchain/openai
 ```
 
-Optional Deep Agents support (peer ranges shipped with `0.7.0`):
+Optional Deep Agents support (including remote subagents):
 
 ```sh
-npm install "deepagents@^1.14.1" "langchain@^1.5.10" "@langchain/core@>=0.3.0" "@langchain/langgraph@^1.4.10"
+npm install "deepagents@^1.16.0" "langchain@^1.5.10" "@langchain/core@^1.2.14" "@langchain/langgraph@^1.4.10"
 ```
 
 ## Configuration
@@ -696,6 +696,70 @@ and Warn report decisions through `onClassify` without replacing content.
 Classification errors allow model and tool execution by default; set
 `silmaril: { failOpen: false }` to require a successful classification. Already
 emitted streaming text cannot be recalled.
+
+### Remote subagents
+
+Remote support requires `deepagents@^1.16.0`. Use `createProtectedDeepAgent`
+in **both services**. The remote Agent Protocol service owns its graph, model,
+tools and Firewall client.
+
+In the **remote service** (`remote-child.ts`):
+
+```typescript
+import { Firewall } from "@silmaril-security/sdk";
+import { createProtectedDeepAgent } from "@silmaril-security/sdk/adapters/deepagents";
+
+const childFirewall = new Firewall({
+  apiKey: process.env.SILMARIL_API_KEY!,
+  apiUrl: process.env.SILMARIL_API_URL!,
+});
+export const graph = createProtectedDeepAgent(childFirewall, {
+  model: process.env.CHILD_MODEL!,
+  silmaril: { mode: "block", failOpen: false },
+});
+```
+
+Register `graph` as `research` in the remote service's Agent Protocol configuration.
+Its input, tool-call, tool-result and non-streamed output checks execute inside
+that child. Configure its tools and additional children through the same factory.
+
+In the **parent application**:
+
+```typescript
+const parent = createProtectedDeepAgent(parentFirewall, {
+  model: parentModel,
+  subagents: [{
+    name: "research", description: "Background research",
+    graphId: "research", url: "https://research.example.com",
+    mode: "isolated", // or "fork" to include parent conversation context
+    notifyParent: false,
+    updateStrategy: "enqueue",
+  }],
+  silmaril: { mode: "block", failOpen: false },
+});
+const result = await parent.invoke(
+  { messages: [{ role: "user", content: "Research this topic" }] },
+  { configurable: { thread_id: "parent-conversation" } },
+);
+```
+
+The native `start_async_task`, `check_async_task`, `update_async_task`,
+`cancel_async_task` and `list_async_tasks` tools retain upstream behavior and
+tracked `asyncTasks` state. Parent middleware checks delegation before launch,
+returned tool results and background task notifications before model use.
+Blocked result text is withheld while native task bookkeeping remains available.
+Shadow/Warn preserve content; classification failure behavior follows `failOpen`.
+
+The child uses its own native `thread_id` as `metadata.conversationId`.
+Available `parent_thread_id` and `subagent_name` appear under `metadata.langgraph`
+for attribution; they confer no authorization and do not replace child identity.
+Native `headers` authenticate to the remote Agent Protocol service; each service
+configures its Silmaril client separately. Fork mode shares conversation context;
+deploy the child with its own middleware in either mode. The parent cannot install
+middleware into another server or attest its deployment. Set `notifyParent: false`
+for another deployment and check results through the native lifecycle tools.
+Webhook-delivered results consumed by your application require an application-side
+classification boundary. Streaming output retains the limitations described above.
 
 ## Migrating to 0.8.1
 
