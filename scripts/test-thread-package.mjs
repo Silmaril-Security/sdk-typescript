@@ -9,6 +9,7 @@ import { createLangChainHandler, protectLangChainRunnable } from "@silmaril-secu
 import { createProtectedDeepAgent } from "@silmaril-security/sdk/adapters/deepagents";
 
 const require = createRequire(import.meta.url);
+const packageVersion = require("../package.json").version;
 const cjs = require("@silmaril-security/sdk");
 const cjsLangChain = require("@silmaril-security/sdk/adapters/langchain");
 const cjsDeepAgents = require("@silmaril-security/sdk/adapters/deepagents");
@@ -155,7 +156,7 @@ async function verify(suite) {
   assert.ok(payloads.length - deepFirst >= 2);
   assert.ok(payloads.slice(deepFirst).every((event) => event.metadata.conversationId === "deep-native"));
   assert.equal(new Set(payloads.map((event) => event.metadata.silmaril.request_id)).size, payloads.length);
-  assert.ok(payloads.every((event) => event.metadata.silmaril.sdk_version === "0.8.2"));
+  assert.ok(payloads.every((event) => event.metadata.silmaril.sdk_version === packageVersion));
   console.log(`${suite.name}: built native-thread graph, runnable, Deep Agents and request-ID checks passed`);
 }
 
