@@ -34,7 +34,7 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-After publication, pin version 0.8.2 for reproducible installs:
+Pin version 0.8.2 for reproducible installs:
 
 ```sh
 npm install @silmaril-security/sdk@0.8.2
@@ -756,6 +756,6 @@ IDs must be non-empty; MCP tools also require their canonical server parent ID.
 The compatibility metadata copy remains attribution only. Caller agent metadata
 does not supply an authenticated principal.
 
-This source prepares version 0.8.2. Its registry install command becomes
-available after the authorized main-branch release workflow publishes the package.
-Confirm registry publication before installing this version.
+Version 0.8.2 is published on
+[npm](https://www.npmjs.com/package/@silmaril-security/sdk/v/0.8.2) and as a
+[GitHub release](https://github.com/Silmaril-Security/sdk-typescript/releases/tag/v0.8.2).
