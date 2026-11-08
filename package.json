@@ -96,7 +96,7 @@
     "@langchain/core": ">=0.3.0",
     "@langchain/langgraph": "^1.4.10",
     "ai": "^5.0.0 || ^6.0.0",
-    "deepagents": "^1.14.1",
+    "deepagents": "^1.16.0",
     "langchain": "^1.5.10"
   },
   "peerDependenciesMeta": {
@@ -124,7 +124,7 @@
     "@typescript-eslint/eslint-plugin": "^7.8.0",
     "@typescript-eslint/parser": "^7.8.0",
     "ai": "^6.0.191",
-    "deepagents": "^1.14.1",
+    "deepagents": "^1.16.0",
     "eslint": "^8.57.0",
     "langchain": "^1.5.10",
     "tsup": "^8.0.0",

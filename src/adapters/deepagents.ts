@@ -67,6 +67,37 @@ function stripAllowedMarker(result: ToolMessage | Command): ToolMessage | Comman
   return result;
 }
 
+function remoteLineage(config: unknown): Record<string, unknown> {
+  const record = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  const native = record(record(config).metadata);
+  const parent = record(record(record(config).configurable).deepagents_parent);
+  const lineage = Object.fromEntries(Object.entries({
+    parent_thread_id: native.parent_thread_id ?? parent.thread_id,
+    subagent_name: native.subagent_name,
+  }).filter(([, value]) => typeof value === "string" && value.trim().length > 0));
+  return Object.keys(lineage).length ? { langgraph: lineage } : {};
+}
+
+function remoteNotification(message: { additional_kwargs?: Record<string, unknown> }): boolean {
+  const extra = message.additional_kwargs ?? {};
+  // Notification metadata selects inspection, never authority.
+  return (typeof extra.lc_source === "string" && extra.lc_source.includes("async_subagent"))
+    || (extra.deepagents_notification !== null && typeof extra.deepagents_notification === "object");
+}
+
+async function notificationKey(message: { id?: string; content: unknown; additional_kwargs?: Record<string, unknown> }, threadId: string | undefined, mode: FirewallMode | undefined): Promise<string | undefined> {
+  if (!threadId || !message.id) return undefined;
+  try {
+    const payload = JSON.stringify([message.content, message.additional_kwargs]);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+    const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    return JSON.stringify([threadId, message.id, hash, mode]);
+  } catch {
+    // Unserializable messages or unavailable hashing always receive a fresh check.
+    return undefined;
+  }
+}
+
 export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgentsMiddlewareOptions = {}) {
   rejectConversationOptions(options);
   const maxBlockedAttempts = options.maxBlockedAttempts ?? 3;
@@ -74,14 +105,15 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
     throw new Error("maxBlockedAttempts must be a positive integer");
   }
   const effectiveMode = validateMode(options.mode) ?? firewall.mode;
-  const classify = async (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined }> => {
+  const notificationChecks = new Map<string, boolean>();
+  const classify = async (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined; cacheable?: boolean }> => {
     if (!text.trim()) return { enforce: false, mode: effectiveMode };
     try {
       const result = await firewall.classify(text, {
         hook,
         ...(toolName === undefined ? {} : { toolName }),
         ...(effectiveMode === undefined ? {} : { mode: effectiveMode }),
-        ...(conversationId === undefined ? {} : { metadata: { conversationId } }),
+        metadata: { ...(conversationId === undefined ? {} : { conversationId }), ...remoteLineage(ensureConfig()) },
       });
       const mode = effectiveMode ?? result.mode ?? "block";
       const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
@@ -92,7 +124,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
           // Observation callbacks do not change enforcement.
         }
       }
-      return { enforce: blocked && mode === "block", mode };
+      return { enforce: blocked && mode === "block", mode, cacheable: true };
     } catch (error) {
       if (isReviewCompatibilityError(error)) throw error;
       if (options.failOpen === false) throw error;
@@ -104,6 +136,29 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
     name: "SilmarilDeepAgentsMiddleware",
     wrapModelCall: async (request, handler) => {
       const conversationId = nativeThreadId(request.runtime, undefined, undefined, ensureConfig());
+      const messages = [];
+      for (const message of request.messages) {
+        let blocked = false;
+        if (remoteNotification(message)) {
+          const key = await notificationKey(message, conversationId, effectiveMode);
+          const cached = key === undefined ? undefined : notificationChecks.get(key);
+          if (cached !== undefined) {
+            blocked = cached;
+            notificationChecks.delete(key!); notificationChecks.set(key!, cached);
+          } else {
+            const decision = await classify(textOf(message), HookLabel.TOOL_RESPONSE, conversationId, "async_subagent");
+            blocked = decision.enforce;
+            if (key !== undefined && decision.cacheable) {
+              notificationChecks.set(key, blocked);
+              while (notificationChecks.size > 1024) notificationChecks.delete(notificationChecks.keys().next().value!);
+            }
+          }
+        }
+        messages.push(blocked
+          ? new HumanMessage({ content: SAFE_TOOL_MESSAGE, ...(message.id === undefined ? {} : { id: message.id }) })
+          : message);
+      }
+      request = { ...request, messages };
       const history = request.state.messages;
       let lastUserIndex = -1;
       for (let i = history.length - 1; i >= 0; i--) {
@@ -162,6 +217,11 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
         return decision.mode === "block" ? safe() : stripAllowedMarker(result);
       }
       if ((await classify(resultText, HookLabel.TOOL_RESPONSE, conversationId, request.toolCall.name)).enforce) {
+        if (["start_async_task", "check_async_task", "update_async_task", "cancel_async_task", "list_async_tasks"].includes(request.toolCall.name)
+          && result instanceof Command && result.update && !Array.isArray(result.update)
+          && "asyncTasks" in result.update) {
+          return new Command({ update: { messages: [safe()], asyncTasks: result.update.asyncTasks } });
+        }
         return safe();
       }
       return stripAllowedMarker(result);
@@ -196,14 +256,18 @@ export interface ProtectedDeepAgentOptions extends Omit<NonNullable<Parameters<t
   silmaril?: DeepAgentsMiddlewareOptions;
 }
 
-/** Protect root, default general-purpose, and declarative subagents. */
+/** Protect this graph and inline children; support native remote subagents.
+ * Deploy each remote graph with this constructor too. Parent checks cover
+ * delegation/results; the child's middleware enforces its internal actions.
+ */
 export function createProtectedDeepAgent(firewall: Firewall, options: ProtectedDeepAgentOptions = {}) {
   rejectConversationOptions(options);
   const { silmaril, subagents = [], protectedCompiledSubagents = [], middleware = [], ...agentOptions } = options;
   const protectedSubagents = subagents.map((subagent) => {
-    if ("runnable" in subagent || "graphId" in subagent) {
-      throw new Error("Compiled or remote subagents must install Silmaril middleware inside their own graph");
+    if ("runnable" in subagent) {
+      throw new Error("Compiled subagents must use createProtectedCompiledSubagent");
     }
+    if ("graphId" in subagent) return { ...subagent };
     return { ...subagent, middleware: [...(subagent.middleware ?? []), createDeepAgentsMiddleware(firewall, silmaril)] };
   });
   if (!protectedSubagents.some((subagent) => subagent.name === GENERAL_PURPOSE_SUBAGENT.name)) {
