@@ -28,7 +28,7 @@ async function peer() {
   const threads = new Map<string, Thread>();
   const runs = new Map<string, Run>();
   const requests: Array<{ method: string; path: string; body: Body }> = [];
-  const state = { child: undefined as ReturnType<typeof createProtectedDeepAgent> | undefined, tamper: false, fail: false };
+  const state = { child: undefined as ReturnType<typeof createProtectedDeepAgent> | undefined, tamper: false, fail: false, errors: [] as unknown[] };
   const server = createServer(async (req, res) => {
     try {
       const chunks = [];
@@ -58,11 +58,18 @@ async function peer() {
       if (req.method === "GET" && parts.length === 4) return send(runs.get(parts[3]!));
       if (req.method === "GET" && parts.length === 3) return send([...runs.values()].filter(r => r.thread_id === parts[1]).reverse());
       return send({ error: "unexpected path " + path }, 404);
-    } catch (error) { res.writeHead(500); res.end(String(error)); }
+    } catch (error) {
+      state.errors.push(error);
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Agent Protocol test handler failed" }));
+    }
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const address = server.address(); if (!address || typeof address === "string") throw new Error("No test port");
-  return { state, threads, requests, url: `http://127.0.0.1:${address.port}`, close: async () => { server.closeAllConnections(); server.close(); await once(server, "close"); } };
+  return { state, threads, requests, url: `http://127.0.0.1:${address.port}`, close: async () => {
+    server.closeAllConnections(); server.close(); await once(server, "close");
+    if (state.errors.length) throw new AggregateError(state.errors, "Agent Protocol test handler failed");
+  } };
 }
 
 type Peer = Awaited<ReturnType<typeof peer>>;
