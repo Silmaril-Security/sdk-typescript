@@ -85,6 +85,19 @@ function remoteNotification(message: { additional_kwargs?: Record<string, unknow
     || (extra.deepagents_notification !== null && typeof extra.deepagents_notification === "object");
 }
 
+async function notificationKey(message: { id?: string; content: unknown; additional_kwargs?: Record<string, unknown> }, threadId: string | undefined, mode: FirewallMode | undefined): Promise<string | undefined> {
+  if (!threadId || !message.id) return undefined;
+  try {
+    const payload = JSON.stringify([message.content, message.additional_kwargs]);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+    const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    return JSON.stringify([threadId, message.id, hash, mode]);
+  } catch {
+    // Unserializable messages or unavailable hashing always receive a fresh check.
+    return undefined;
+  }
+}
+
 export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgentsMiddlewareOptions = {}) {
   rejectConversationOptions(options);
   const maxBlockedAttempts = options.maxBlockedAttempts ?? 3;
@@ -92,7 +105,8 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
     throw new Error("maxBlockedAttempts must be a positive integer");
   }
   const effectiveMode = validateMode(options.mode) ?? firewall.mode;
-  const classify = async (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined }> => {
+  const notificationChecks = new Map<string, boolean>();
+  const classify = async (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined; cacheable?: boolean }> => {
     if (!text.trim()) return { enforce: false, mode: effectiveMode };
     try {
       const result = await firewall.classify(text, {
@@ -110,7 +124,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
           // Observation callbacks do not change enforcement.
         }
       }
-      return { enforce: blocked && mode === "block", mode };
+      return { enforce: blocked && mode === "block", mode, cacheable: true };
     } catch (error) {
       if (isReviewCompatibilityError(error)) throw error;
       if (options.failOpen === false) throw error;
@@ -124,9 +138,25 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
       const conversationId = nativeThreadId(request.runtime, undefined, undefined, ensureConfig());
       const messages = [];
       for (const message of request.messages) {
-        if (remoteNotification(message) && (await classify(textOf(message), HookLabel.TOOL_RESPONSE, conversationId, "async_subagent")).enforce) {
-          messages.push(new HumanMessage({ content: SAFE_TOOL_MESSAGE, ...(message.id === undefined ? {} : { id: message.id }) }));
-        } else messages.push(message);
+        let blocked = false;
+        if (remoteNotification(message)) {
+          const key = await notificationKey(message, conversationId, effectiveMode);
+          const cached = key === undefined ? undefined : notificationChecks.get(key);
+          if (cached !== undefined) {
+            blocked = cached;
+            notificationChecks.delete(key!); notificationChecks.set(key!, cached);
+          } else {
+            const decision = await classify(textOf(message), HookLabel.TOOL_RESPONSE, conversationId, "async_subagent");
+            blocked = decision.enforce;
+            if (key !== undefined && decision.cacheable) {
+              notificationChecks.set(key, blocked);
+              while (notificationChecks.size > 1024) notificationChecks.delete(notificationChecks.keys().next().value!);
+            }
+          }
+        }
+        messages.push(blocked
+          ? new HumanMessage({ content: SAFE_TOOL_MESSAGE, ...(message.id === undefined ? {} : { id: message.id }) })
+          : message);
       }
       request = { ...request, messages };
       const history = request.state.messages;

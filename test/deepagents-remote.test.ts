@@ -184,6 +184,51 @@ describe("protected remote Deep Agents", () => {
     } finally { await p.close(); }
   });
 
+  it("filters a native notification once and reapplies its blocked replacement after resume", async () => {
+    const p = await peer();
+    try {
+      attachChild(p, firewall(), true); p.state.tamper = true;
+      const fw = firewall();
+      const model = fakeModel().respondWithTools([{ name: "start_async_task", args: { description: "safe", agentName: "research" }, id: "start" }])
+        .respond(new AIMessage("done")).respond(new AIMessage("done again"));
+      const agent = createProtectedDeepAgent(fw, { model, checkpointer: new MemorySaver(), subagents: [{
+        name: "research", description: "Remote", graphId: "research", url: p.url, notifyParent: true,
+      }] });
+      const config = { configurable: { thread_id: "parent-resume" } };
+      const first = await agent.invoke({ messages: [new HumanMessage("hello")] }, config);
+      expect(first.messages.some((message: HumanMessage) => JSON.stringify(message.content).includes("unsafe remote result")
+        && (message.additional_kwargs.lc_source === "async_subagent" || "deepagents_notification" in message.additional_kwargs))).toBe(true);
+      await agent.invoke({ messages: [new HumanMessage("safe newer question")] }, config);
+      expect(model.calls.every(call => call.messages.every(message => !JSON.stringify(message.content).includes("unsafe remote result")))).toBe(true);
+      const checks = vi.mocked(fw.classify).mock.calls.filter(([text, opts]) => text.includes("unsafe remote result")
+        && opts?.hook === HookLabel.TOOL_RESPONSE && opts?.toolName === "async_subagent");
+      expect(checks).toHaveLength(1);
+    } finally { await p.close(); }
+  });
+
+  it("binds notification checks to thread and content and retries failed checks", async () => {
+    const fw = firewall(); const middleware = createDeepAgentsMiddleware(fw);
+    const request = (thread: string, content: string) => {
+      const messages = [new HumanMessage({ id: "note", content, additional_kwargs: { lc_source: "async_subagent" } }), new HumanMessage("safe")];
+      return { messages, state: { messages }, runtime: { configurable: { thread_id: thread } } };
+    };
+    for (const [thread, text] of [["one", "safe note"], ["one", "safe note"], ["two", "safe note"], ["one", "unsafe changed note"]]) {
+      await middleware.wrapModelCall!(request(thread!, text!) as never, async () => new AIMessage("done"));
+    }
+    expect(vi.mocked(fw.classify).mock.calls.filter(([, opts]) => opts?.toolName === "async_subagent")).toHaveLength(3);
+    const raw = fw.classify; let failed = false;
+    fw.classify = vi.fn(async (text, options) => {
+      if (options?.toolName === "async_subagent" && !failed) { failed = true; throw new Error("temporary"); }
+      return raw(text, options);
+    }) as typeof fw.classify;
+    const req = request("fresh", "unsafe notification");
+    const received: string[] = [];
+    const handler = async (r: { messages: HumanMessage[] }) => { received.push(String(r.messages[0]?.content)); return new AIMessage("done"); };
+    await middleware.wrapModelCall!(req as never, handler as never);
+    await middleware.wrapModelCall!(req as never, handler as never);
+    expect(received).toEqual(["unsafe notification", SAFE_TOOL_MESSAGE]);
+  });
+
   it.each(["block", "warn", "shadow"] as const)("handles background notifications in %s mode before newer human messages", async mode => {
     for (const key of ["lc_source", "deepagents_notification"]) {
       const fw = firewall(); const middleware = createDeepAgentsMiddleware(fw, { mode });

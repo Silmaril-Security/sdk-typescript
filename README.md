@@ -748,6 +748,10 @@ The native `start_async_task`, `check_async_task`, `update_async_task`,
 tracked `asyncTasks` state. Parent middleware checks delegation before launch,
 returned tool results and background task notifications before model use.
 Blocked result text is withheld while native task bookkeeping remains available.
+Successful notification checks are reused for unchanged native message IDs within
+a thread using a bounded middleware-local cache. Blocked replacements are applied
+again after checkpoint resume. A new graph/process rechecks retained notifications;
+failed classifications are retried.
 Shadow/Warn preserve content; classification failure behavior follows `failOpen`.
 
 The child uses its own native `thread_id` as `metadata.conversationId`.
