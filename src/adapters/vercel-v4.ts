@@ -463,19 +463,23 @@ export function createMiddlewareV4(
       const drain = (
         controller: TransformStreamDefaultController<V4StreamPart>,
       ): void => {
-        while (queueHead < queue.length) {
-          const entry = queue[queueHead]!;
-          if (entry.status === "pending") break;
-          queueHead++;
-          queuedBytes -= entry.size;
-          if (entry.replacement !== undefined) {
-            controller.enqueue(entry.replacement);
-          } else if (entry.status === "approved") {
-            controller.enqueue(entry.part);
+        try {
+          while (queueHead < queue.length) {
+            const entry = queue[queueHead]!;
+            if (entry.status === "pending") break;
+            queueHead++;
+            queuedBytes -= entry.size;
+            if (entry.replacement !== undefined) {
+              controller.enqueue(entry.replacement);
+            } else if (entry.status === "approved") {
+              controller.enqueue(entry.part);
+            }
           }
-        }
-        if (queueHead === queue.length) {
-          queue.length = 0;
+        } finally {
+          // A pending suffix can keep this queue non-empty for an entire
+          // interleaved response. Remove every consumed prefix immediately so
+          // emitted parts no longer remain reachable through the backing array.
+          if (queueHead > 0) queue.splice(0, queueHead);
           queueHead = 0;
         }
       };

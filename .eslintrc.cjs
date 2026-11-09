@@ -24,6 +24,10 @@ module.exports = {
     "@typescript-eslint/no-explicit-any": "off",
     "prefer-const": "error",
   },
+  overrides: [{
+    files: ["test/ai7-contract/*.mjs"],
+    parserOptions: { project: null },
+  }],
   ignorePatterns: [
     "dist",
     "node_modules",

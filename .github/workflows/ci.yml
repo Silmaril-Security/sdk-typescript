@@ -118,3 +118,5 @@ jobs:
         run: npm run typecheck:ai7
       - name: Exercise AI SDK 7 generateText without inference
         run: node test/ai7-contract/generate-text.mjs
+      - name: Verify bounded interleaved Block-mode memory
+        run: node test/ai7-contract/vercel-v4-memory.mjs
