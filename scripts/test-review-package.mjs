@@ -11,6 +11,8 @@ import { createLangChainHandler as createEsmLangChainHandler } from
   "@silmaril-security/sdk/adapters/langchain";
 import { createMiddleware as createEsmVercelMiddleware } from
   "@silmaril-security/sdk/adapters/vercel";
+import { createMiddlewareV4 as createEsmVercelMiddlewareV4 } from
+  "@silmaril-security/sdk/adapters/vercel-v4";
 
 const require = createRequire(import.meta.url);
 const {
@@ -25,6 +27,9 @@ const { createLangChainHandler: createCjsLangChainHandler } = require(
 );
 const { createMiddleware: createCjsVercelMiddleware } = require(
   "@silmaril-security/sdk/adapters/vercel",
+);
+const { createMiddlewareV4: createCjsVercelMiddlewareV4 } = require(
+  "@silmaril-security/sdk/adapters/vercel-v4",
 );
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -181,6 +186,8 @@ async function runSuite(suite) {
 try {
   assert.equal(typeof createEsmVercelMiddleware, "function");
   assert.equal(typeof createCjsVercelMiddleware, "function");
+  assert.equal(typeof createEsmVercelMiddlewareV4, "function");
+  assert.equal(typeof createCjsVercelMiddlewareV4, "function");
   await runSuite({
     name: "ESM",
     Firewall: EsmFirewall,

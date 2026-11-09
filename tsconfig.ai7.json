@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/ai7-contract/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules",
+    "test/**/*.test.ts"
+  ]
+}

@@ -24,5 +24,16 @@ module.exports = {
     "@typescript-eslint/no-explicit-any": "off",
     "prefer-const": "error",
   },
-  ignorePatterns: ["dist", "node_modules", "*.cjs", "tsup.config.ts", "vitest.config.ts"],
+  overrides: [{
+    files: ["test/ai7-contract/*.mjs"],
+    parserOptions: { project: null },
+  }],
+  ignorePatterns: [
+    "dist",
+    "node_modules",
+    "*.cjs",
+    "tsup.config.ts",
+    "vitest.config.ts",
+    "test/ai7-contract/middleware-v4.ts",
+  ],
 };

@@ -1,8 +1,10 @@
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
 import { tool } from "@langchain/core/tools";
+import { createMiddleware } from "langchain";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { registerHarnessProfile } from "deepagents";
 
 import { Firewall } from "../src/index.js";
 import {
@@ -22,6 +24,115 @@ function makeFirewall() {
 }
 
 describe("protected Deep Agents graph", () => {
+  it("gives the actual general-purpose child parent tools, skills, and matching root overrides", async () => {
+    const firewall = makeFirewall();
+    const toolCalls: string[] = [];
+    const search = tool(async ({ query }) => {
+      toolCalls.push(query);
+      return "parent tool result";
+    }, {
+      name: "parent_search",
+      description: "Parent search",
+      schema: z.object({ query: z.string() }),
+    });
+    let skillsCalls = 0;
+    let summarizationCalls = 0;
+    const skills = createMiddleware({
+      name: "SkillsMiddleware",
+      wrapModelCall: async (request, handler) => {
+        skillsCalls++;
+        return handler(request);
+      },
+    });
+    const summarization = createMiddleware({
+      name: "SummarizationMiddleware",
+      wrapModelCall: async (request, handler) => {
+        summarizationCalls++;
+        return handler(request);
+      },
+    });
+    const model = fakeModel()
+      .respondWithTools([{
+        name: "task",
+        args: {
+          description: "Use parent search",
+          subagent_type: "general-purpose",
+        },
+        id: "delegate",
+      }])
+      .respondWithTools([{
+        name: "parent_search",
+        args: { query: "from child" },
+        id: "child-search",
+      }])
+      .respond(new AIMessage("child complete"))
+      .respond(new AIMessage("root complete"));
+
+    const agent = createProtectedDeepAgent(firewall, {
+      model,
+      tools: [search],
+      skills: ["/skills/"],
+      middleware: [skills, summarization],
+    });
+    const output = await agent.invoke({
+      messages: [new HumanMessage("delegate")],
+    });
+
+    expect(toolCalls).toEqual(["from child"]);
+    expect(output.messages.at(-1)?.content).toBe("root complete");
+    // Two root model calls plus two child model calls prove both named
+    // middleware overrides reached the actual child graph.
+    expect(skillsCalls).toBe(4);
+    expect(summarizationCalls).toBe(4);
+  });
+
+  it("keeps profile-excluded parent tools unavailable in the actual child graph", async () => {
+    const firewall = makeFirewall();
+    let toolCalls = 0;
+    const excluded = tool(async () => {
+      toolCalls++;
+      return "must not run";
+    }, {
+      name: "excluded_parent_tool",
+      description: "Original",
+      schema: z.object({}),
+    });
+    registerHarnessProfile("silmaril-profile-test:excluded", {
+      toolDescriptionOverrides: {
+        excluded_parent_tool: "Profile replacement",
+      },
+      excludedTools: ["excluded_parent_tool"],
+    });
+    const model = fakeModel()
+      .respondWithTools([{
+        name: "task",
+        args: {
+          description: "Try the excluded tool",
+          subagent_type: "general-purpose",
+        },
+        id: "delegate",
+      }])
+      .respondWithTools([{
+        name: "excluded_parent_tool",
+        args: {},
+        id: "excluded-call",
+      }])
+      .respond(new AIMessage("child recovered"))
+      .respond(new AIMessage("root complete"));
+    Reflect.set(model, "modelName", "silmaril-profile-test:excluded");
+
+    const agent = createProtectedDeepAgent(firewall, {
+      model,
+      tools: [excluded],
+    });
+    const output = await agent.invoke({
+      messages: [new HumanMessage("delegate")],
+    });
+
+    expect(toolCalls).toBe(0);
+    expect(output.messages.at(-1)?.content).toBe("root complete");
+  });
+
   it("continues to an allowed tool after denying a tool call", async () => {
     const firewall = makeFirewall();
     const called: string[] = [];

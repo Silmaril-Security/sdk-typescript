@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     "adapters/vercel": "src/adapters/vercel.ts",
+    "adapters/vercel-v4": "src/adapters/vercel-v4.ts",
     "adapters/langchain": "src/adapters/langchain.ts",
     "adapters/deepagents": "src/adapters/deepagents.ts",
   },

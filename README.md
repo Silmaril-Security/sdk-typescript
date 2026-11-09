@@ -34,10 +34,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-Pin version 0.9.0 for reproducible installs:
+Pin version 0.9.1 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.9.0
+npm install @silmaril-security/sdk@0.9.1
 ```
 
 Requires Node 20 or later.
@@ -50,12 +50,17 @@ This repository is public and source-available for integration transparency,
 but the SDK is not permissive open source. See [LICENSE](LICENSE) for the
 governing terms.
 
-The core client does not require optional framework peer dependencies. Optional
-Vercel AI SDK middleware support is compatible with Vercel AI SDK v5 and v6:
+The core client does not require optional framework peer dependencies. The
+existing `adapters/vercel` middleware remains compatible with Vercel AI SDK v5
+and v6:
 
 ```sh
 npm install ai @ai-sdk/openai
 ```
+
+AI SDK 7 applications require Node 22 or later and use the separate
+`adapters/vercel-v4` export documented below. The core SDK and its AI SDK 5/6
+adapter continue to support Node 20.
 
 Optional LangChain.js support:
 
@@ -63,10 +68,13 @@ Optional LangChain.js support:
 npm install @langchain/core @langchain/openai
 ```
 
+The supported secure LangChain.js intervals are
+`@langchain/core >=0.3.80 <1` or `@langchain/core >=1.1.8`.
+
 Optional Deep Agents support (including remote subagents):
 
 ```sh
-npm install "deepagents@^1.16.0" "langchain@^1.5.10" "@langchain/core@^1.2.14" "@langchain/langgraph@^1.4.10"
+npm install "deepagents@>=1.16.0 <1.17.0" "langchain@^1.5.10" "@langchain/core@^1.2.14" "@langchain/langgraph@^1.4.10"
 ```
 
 ## Configuration
@@ -586,6 +594,61 @@ the consumer has already seen the text by the time an error part is enqueued.
 Use non-streaming generation if you need to block before the caller observes
 output.
 
+### Vercel AI SDK 7
+
+AI SDK 7 uses the `LanguageModelV4Middleware` contract and requires Node 22 or
+later. Import its adapter explicitly; `Firewall.asMiddleware()` intentionally
+retains the AI SDK 5/6 v3 contract.
+
+```ts
+import { generateText, wrapLanguageModel } from "ai";
+import { openai } from "@ai-sdk/openai";
+import { Firewall } from "@silmaril-security/sdk";
+import { createMiddlewareV4 } from "@silmaril-security/sdk/adapters/vercel-v4";
+
+const fw = new Firewall({
+  apiKey: process.env.SILMARIL_API_KEY!,
+  apiUrl: process.env.SILMARIL_API_URL!,
+});
+
+const model = wrapLanguageModel({
+  model: openai("gpt-5"),
+  middleware: createMiddlewareV4(fw, {
+    scanOutput: true,
+    scanToolCalls: true,
+    maxBufferedBytes: 1_048_576,
+  }),
+});
+
+const result = await generateText({ model, prompt: "Hello" });
+console.log(result.text);
+```
+
+The v4 adapter reads generated text and tool calls from `result.content`, and
+classifies prompt tool-result parts with their tool name and call ID. Reasoning
+parts are passed through unchanged and are not classified.
+
+For streaming, text and tool-input sequences are tracked by ID. In effective or
+possible Block mode, the adapter retains original text and tool-input parts in a
+global order queue until each complete sequence has a verdict. Benign parts are
+then emitted unchanged and in their original interleaved order. Blocked parts
+are replaced by an `error` part carrying `FirewallBlockedException`; argument
+deltas and final blocked tool calls are not emitted. Incomplete sequences are
+classified before finish/flush. Abort, cancellation, classifier failures, and
+invalid stream identity do not release pending content.
+
+After a streamed tool input is classified, the adapter retains only its bounded
+SHA-256 fingerprint, encoding, tool name, ID, and verdict. A byte-identical
+final `tool-call` reuses that verdict. A different final input—including
+semantically equivalent JSON with different whitespace—is independently
+classified before emission; a newly blocked final call is never exposed for
+execution.
+
+The Block-mode queue is bounded by `maxBufferedBytes` (default 1 MiB) and
+`maxBufferedParts` (default 10,000). Exceeding either limit errors the stream
+without releasing pending content. Shadow and Warn retain observation behavior
+without waiting for a Block verdict.
+
 ## LangChain.js
 
 Install the optional peer dependencies:
@@ -676,13 +739,38 @@ await agent.invoke(
 );
 ```
 
-The constructor installs checks on the root, general-purpose, and declarative
-subagents. For a compiled subagent, call
+The constructor installs checks on the root and declarative subagents. For
+string model specs it uses the released public Deep Agents profile resolver.
+For model objects, the qualified `deepagents >=1.16.0 <1.17.0` compatibility
+path mirrors the released 1.16.x hint order: known `getName()` provider
+mappings, `ConfigurableModel._defaultConfig`, `model_name` / `modelName`, exact
+provider-model match, colon-qualified identifier, then provider fallback.
+Those model-object fields are upstream-private compatibility inputs; package
+metadata excludes unqualified future minors, unknown models with no hints use
+the empty profile, and malformed hints fail rather than silently disabling
+profile protection. No Deep Agents internals are imported and the global
+profile registry is not modified by the SDK.
+
+The protected general-purpose spec honors `enabled: false`, custom
+`description` / `systemPrompt`, parent tools and skills, profile tool
+description overrides, excluded tools, and matching root overrides for the
+default, skills, and static profile middleware slots. Tool clones retain their
+prototype. Novel root middleware remains root-only, matching upstream default
+behavior. A profile `extraMiddleware` factory combined with custom root
+middleware is not statically observable, so the constructor rejects that
+combination rather than silently dropping a possible named override. The
+released 1.16.x JavaScript profile API has no rename field.
+
+For a compiled subagent, call
 `createProtectedCompiledSubagent(fw, { name: "review", description: "Review",
 model, tools })` and pass its returned spec through
 `protectedCompiledSubagents`. That factory installs middleware before
 compilation. The parent constructor verifies the exact graph and Firewall
-client; it rejects arbitrary compiled runnables. Root custom middleware does
+client; it rejects arbitrary compiled runnables and mutated execution modes.
+Set `mode: "isolated"` (default behavior when omitted) or the upstream beta
+`mode: "fork"` on the protected compiled factory. The mode is attached only to
+the returned Deep Agents spec; it is not passed into LangChain `createAgent`.
+Root custom middleware does
 not automatically reach every subagent. For custom agent construction, import
 `createDeepAgentsMiddleware` from the same adapter subpath.
 
@@ -699,7 +787,7 @@ emitted streaming text cannot be recalled.
 
 ### Remote subagents
 
-Remote support requires `deepagents@^1.16.0`. Use `createProtectedDeepAgent`
+Remote support requires `deepagents@>=1.16.0 <1.17.0`. Use `createProtectedDeepAgent`
 in **both services**. The remote Agent Protocol service owns its graph, model,
 tools and Firewall client.
 
