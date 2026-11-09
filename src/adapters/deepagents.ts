@@ -3,8 +3,17 @@
 /** Optional Deep Agents integration. Import from @silmaril-security/sdk/adapters/deepagents. */
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { ensureConfig } from "@langchain/core/runnables";
+import type { StructuredTool } from "@langchain/core/tools";
 import { Command } from "@langchain/langgraph";
-import { createDeepAgent, GENERAL_PURPOSE_SUBAGENT, type AnySubAgent, type CompiledSubAgent } from "deepagents";
+import {
+  createDeepAgent,
+  EMPTY_HARNESS_PROFILE,
+  GENERAL_PURPOSE_SUBAGENT,
+  getHarnessProfile,
+  type AnySubAgent,
+  type CompiledSubAgent,
+  type HarnessProfile,
+} from "deepagents";
 import { createAgent, createMiddleware, type CreateAgentParams } from "langchain";
 
 import type { Firewall } from "../firewall.js";
@@ -22,7 +31,200 @@ const BLOCKED_TOOL_MARKER = "silmaril-firewall:v1:blocked-tool";
 const issuedBlockedMessages = new WeakSet<ToolMessage>();
 
 // A protected graph is identified by the exact runnable returned by our factory.
-const protectedCompiledGraphs = new WeakMap<object, Firewall>();
+// Store the original mode too so a mutable spec cannot change execution
+// semantics after its graph has been registered.
+const protectedCompiledGraphs = new WeakMap<
+  object,
+  { readonly firewall: Firewall; readonly mode: "isolated" | "fork" | undefined }
+>();
+const GENERAL_PURPOSE_DEFAULT_MIDDLEWARE = new Set([
+  "FilesystemMiddleware",
+  "SummarizationMiddleware",
+  "PatchToolCallsMiddleware",
+]);
+type DeepAgentMiddleware = NonNullable<
+  NonNullable<Parameters<typeof createDeepAgent>[0]>["middleware"]
+>[number];
+
+function isCompiledMode(value: unknown): value is "isolated" | "fork" {
+  return value === "isolated" || value === "fork";
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function modelCompatName(model: object): string {
+  const getName = Reflect.get(model, "getName");
+  if (typeof getName !== "function") {
+    throw new Error(
+      "Protected Deep Agents model-object profiles require a callable getName()",
+    );
+  }
+  const name: unknown = Reflect.apply(getName, model, []);
+  if (typeof name !== "string" || !name) {
+    throw new Error(
+      "Protected Deep Agents model-object getName() must return a non-empty string",
+    );
+  }
+  return name;
+}
+
+function optionalModelHint(
+  record: object,
+  key: string,
+  location: string,
+): string | undefined {
+  const value: unknown = Reflect.get(record, key);
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(
+      `Protected Deep Agents ${location}.${key} profile hint must be a string`,
+    );
+  }
+  return value;
+}
+
+function configurableDefaults(model: object): Record<string, unknown> | undefined {
+  const value: unknown = Reflect.get(model, "_defaultConfig");
+  if (value === undefined || value === null) return undefined;
+  const defaults = recordValue(value);
+  if (defaults === undefined) {
+    throw new Error(
+      "Protected Deep Agents ConfigurableModel._defaultConfig must be an object",
+    );
+  }
+  return defaults;
+}
+
+function modelProviderHint(model: object): string | undefined {
+  const name = modelCompatName(model);
+  if (name === "ConfigurableModel") {
+    const defaults = configurableDefaults(model);
+    return defaults === undefined
+      ? undefined
+      : optionalModelHint(defaults, "modelProvider", "_defaultConfig");
+  }
+  const providers: Readonly<Record<string, string>> = {
+    ChatAnthropic: "anthropic",
+    ChatOpenAI: "openai",
+    ChatGoogleGenerativeAI: "google",
+  };
+  return providers[name];
+}
+
+function modelIdentifierHint(model: object): string | undefined {
+  const name = modelCompatName(model);
+  const configurable = name === "ConfigurableModel"
+    ? configurableDefaults(model)
+    : undefined;
+  return (
+    (configurable === undefined
+      ? undefined
+      : optionalModelHint(configurable, "model", "_defaultConfig"))
+    ?? optionalModelHint(model, "model_name", name)
+    ?? optionalModelHint(model, "modelName", name)
+  );
+}
+
+function resolveProtectedHarnessProfile(model: unknown): HarnessProfile | undefined {
+  if (typeof model === "string") {
+    return getHarnessProfile(model);
+  }
+  if (
+    (typeof model !== "object" && typeof model !== "function")
+    || model === null
+  ) {
+    throw new Error(
+      "Protected Deep Agents model must be a string or model object",
+    );
+  }
+  const providerHint = modelProviderHint(model);
+  const identifierHint = modelIdentifierHint(model);
+
+  if (providerHint && identifierHint && !identifierHint.includes(":")) {
+    const exact = getHarnessProfile(`${providerHint}:${identifierHint}`);
+    if (exact !== undefined) return exact;
+  }
+  if (identifierHint?.includes(":")) {
+    const exact = getHarnessProfile(identifierHint);
+    if (exact !== undefined) return exact;
+  }
+  if (providerHint) {
+    const provider = getHarnessProfile(providerHint);
+    if (provider !== undefined) return provider;
+  }
+  return EMPTY_HARNESS_PROFILE;
+}
+
+function applyProfileToolDescriptions<T>(
+  tools: readonly T[],
+  profile: HarnessProfile | undefined,
+): T[] {
+  const overrides = profile?.toolDescriptionOverrides ?? {};
+  if (Object.keys(overrides).length === 0) return [...tools];
+  return tools.map((tool) => {
+    if (
+      (typeof tool !== "object" && typeof tool !== "function")
+      || tool === null
+    ) {
+      return tool;
+    }
+    const name: unknown = Reflect.get(tool, "name");
+    if (typeof name !== "string" || !(name in overrides)) return tool;
+    return Object.assign(
+      Object.create(Object.getPrototypeOf(tool)),
+      tool,
+      { description: overrides[name] },
+    );
+  });
+}
+
+function generalPurposeRootOverrides(
+  profile: HarnessProfile | undefined,
+  middleware: readonly DeepAgentMiddleware[],
+): DeepAgentMiddleware[] {
+  const profileMiddleware = profile?.extraMiddleware ?? [];
+  if (typeof profileMiddleware === "function" && middleware.length > 0) {
+    throw new Error(
+      "Protected Deep Agents cannot preserve root middleware overrides when the active profile uses an extraMiddleware factory; use a static profile middleware array",
+    );
+  }
+  const names = new Set(GENERAL_PURPOSE_DEFAULT_MIDDLEWARE);
+  names.add("SkillsMiddleware");
+  if (Array.isArray(profileMiddleware)) {
+    for (const entry of profileMiddleware) names.add(entry.name);
+  }
+  for (const excluded of profile?.excludedMiddleware ?? []) {
+    names.delete(excluded);
+  }
+  return middleware.filter((entry) => names.has(entry.name));
+}
+
+function applyGeneralPurposeProfile(
+  profile: HarnessProfile | undefined,
+): Pick<AnySubAgent, "description"> & { systemPrompt: string } {
+  const config = profile?.generalPurposeSubagent;
+  if (config?.systemPrompt !== undefined) {
+    return {
+      description: config.description ?? GENERAL_PURPOSE_SUBAGENT.description,
+      systemPrompt: config.systemPrompt,
+    };
+  }
+  let systemPrompt =
+    profile?.baseSystemPrompt ?? GENERAL_PURPOSE_SUBAGENT.systemPrompt;
+  if (profile?.systemPromptSuffix !== undefined) {
+    systemPrompt = systemPrompt
+      ? `${systemPrompt}\n\n${profile.systemPromptSuffix}`
+      : profile.systemPromptSuffix;
+  }
+  return {
+    description: config?.description ?? GENERAL_PURPOSE_SUBAGENT.description,
+    systemPrompt,
+  };
+}
 
 export interface DeepAgentsMiddlewareOptions {
   mode?: FirewallMode;
@@ -229,9 +431,10 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
   });
 }
 
-export interface ProtectedCompiledSubagentOptions extends Omit<CreateAgentParams, "middleware"> {
+export interface ProtectedCompiledSubagentOptions extends Omit<CreateAgentParams, "middleware" | "mode"> {
   name: string;
   description: string;
+  mode?: "isolated" | "fork";
   middleware?: CreateAgentParams["middleware"];
   silmaril?: DeepAgentsMiddlewareOptions;
 }
@@ -239,13 +442,21 @@ export interface ProtectedCompiledSubagentOptions extends Omit<CreateAgentParams
 /** Compile a subagent with Silmaril middleware and register that exact graph. */
 export function createProtectedCompiledSubagent(firewall: Firewall, options: ProtectedCompiledSubagentOptions): CompiledSubAgent {
   rejectConversationOptions(options);
-  const { name, description, silmaril, middleware = [], ...agentOptions } = options;
+  const { name, description, mode, silmaril, middleware = [], ...agentOptions } = options;
+  if (mode !== undefined && !isCompiledMode(mode)) {
+    throw new Error("Compiled subagent mode must be isolated or fork");
+  }
   const runnable = createAgent({
     ...agentOptions,
     middleware: [...middleware, createDeepAgentsMiddleware(firewall, silmaril)] as const,
   });
-  protectedCompiledGraphs.set(runnable, firewall);
-  return { name, description, runnable };
+  protectedCompiledGraphs.set(runnable, { firewall, mode });
+  return {
+    name,
+    description,
+    runnable,
+    ...(mode === undefined ? {} : { mode }),
+  };
 }
 
 export interface ProtectedDeepAgentOptions extends Omit<NonNullable<Parameters<typeof createDeepAgent>[0]>, "subagents" | "middleware"> {
@@ -263,6 +474,13 @@ export interface ProtectedDeepAgentOptions extends Omit<NonNullable<Parameters<t
 export function createProtectedDeepAgent(firewall: Firewall, options: ProtectedDeepAgentOptions = {}) {
   rejectConversationOptions(options);
   const { silmaril, subagents = [], protectedCompiledSubagents = [], middleware = [], ...agentOptions } = options;
+  const model = agentOptions.model ?? "anthropic:claude-sonnet-4-6";
+  const harnessProfile = resolveProtectedHarnessProfile(model);
+  const parentTools = agentOptions.tools ?? [];
+  const effectiveParentTools = applyProfileToolDescriptions(
+    parentTools,
+    harnessProfile,
+  );
   const protectedSubagents = subagents.map((subagent) => {
     if ("runnable" in subagent) {
       throw new Error("Compiled subagents must use createProtectedCompiledSubagent");
@@ -270,11 +488,39 @@ export function createProtectedDeepAgent(firewall: Firewall, options: ProtectedD
     if ("graphId" in subagent) return { ...subagent };
     return { ...subagent, middleware: [...(subagent.middleware ?? []), createDeepAgentsMiddleware(firewall, silmaril)] };
   });
-  if (!protectedSubagents.some((subagent) => subagent.name === GENERAL_PURPOSE_SUBAGENT.name)) {
-    protectedSubagents.unshift({ ...GENERAL_PURPOSE_SUBAGENT, middleware: [createDeepAgentsMiddleware(firewall, silmaril)] });
+  const gpConfig = harnessProfile?.generalPurposeSubagent;
+  if (
+    gpConfig?.enabled !== false
+    && !protectedSubagents.some(
+      (subagent) => subagent.name === GENERAL_PURPOSE_SUBAGENT.name,
+    )
+  ) {
+    const inheritedMiddleware = generalPurposeRootOverrides(
+      harnessProfile,
+      middleware,
+    );
+    protectedSubagents.unshift({
+      ...GENERAL_PURPOSE_SUBAGENT,
+      ...applyGeneralPurposeProfile(harnessProfile),
+      model,
+      tools: effectiveParentTools as StructuredTool[],
+      ...(agentOptions.skills === undefined ? {} : { skills: agentOptions.skills }),
+      middleware: [
+        ...inheritedMiddleware,
+        createDeepAgentsMiddleware(firewall, silmaril),
+      ],
+    });
   }
   for (const spec of protectedCompiledSubagents) {
-    if (!spec.runnable || protectedCompiledGraphs.get(spec.runnable) !== firewall) {
+    const registration = spec.runnable
+      ? protectedCompiledGraphs.get(spec.runnable)
+      : undefined;
+    const candidateMode: unknown = spec.mode;
+    if (
+      registration?.firewall !== firewall
+      || (candidateMode !== undefined && !isCompiledMode(candidateMode))
+      || candidateMode !== registration.mode
+    ) {
       throw new Error("Compiled subagents must be built with createProtectedCompiledSubagent for this Firewall client");
     }
   }

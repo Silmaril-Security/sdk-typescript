@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.1
+
+- Add a separate AI SDK 7 `LanguageModelV4Middleware` export at
+  `@silmaril-security/sdk/adapters/vercel-v4`, with content-part generation
+  checks, per-ID text/tool-input stream handling, ordered bounded Block-mode
+  buffering, final tool-call byte verification/reclassification, and exact
+  Node 22 contract coverage. Keep the existing AI SDK 5/6 v3 adapter and
+  `Firewall.asMiddleware()` unchanged.
+- Raise the optional `@langchain/core` peer floor to the retained secure
+  intervals `>=0.3.80 <1 || >=1.1.8`, and test the 0.3.80 boundary.
+- Resolve released string and qualified 1.16.x model-object profiles before
+  protected general-purpose subagent assembly. Preserve disabled/customized
+  profiles, parent tools/skills, tool prototypes, and matching static
+  middleware overrides without hidden replacement or registry mutation.
+- Bound Deep Agents compatibility to `>=1.16.0 <1.17.0`, and add protected
+  compiled-subagent `isolated` / `fork` mode while preserving exact graph,
+  Firewall-client, and original-mode ownership checks.
+
 ## 0.9.0
 
 - Support native remote Deep Agents subagents with parent delegation/result checks

@@ -1,6 +1,6 @@
 {
   "name": "@silmaril-security/sdk",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "TypeScript SDK for Silmaril Firewall — prompt injection and jailbreak detection",
   "license": "SEE LICENSE IN LICENSE",
   "author": "Silmaril Security Inc.",
@@ -48,6 +48,16 @@
         "default": "./dist/adapters/vercel.cjs"
       }
     },
+    "./adapters/vercel-v4": {
+      "import": {
+        "types": "./dist/adapters/vercel-v4.d.ts",
+        "default": "./dist/adapters/vercel-v4.js"
+      },
+      "require": {
+        "types": "./dist/adapters/vercel-v4.d.cts",
+        "default": "./dist/adapters/vercel-v4.cjs"
+      }
+    },
     "./adapters/langchain": {
       "import": {
         "types": "./dist/adapters/langchain.d.ts",
@@ -87,16 +97,17 @@
     "build": "tsup",
     "prepare": "tsup",
     "typecheck": "tsc --noEmit",
+    "typecheck:ai7": "tsc -p tsconfig.ai7.json",
     "lint": "eslint src test",
     "test": "vitest run",
     "test:package": "node scripts/test-review-package.mjs && node scripts/test-thread-package.mjs",
     "test:watch": "vitest"
   },
   "peerDependencies": {
-    "@langchain/core": ">=0.3.0",
+    "@langchain/core": ">=0.3.80 <1 || >=1.1.8",
     "@langchain/langgraph": "^1.4.10",
-    "ai": "^5.0.0 || ^6.0.0",
-    "deepagents": "^1.16.0",
+    "ai": "^5.0.0 || ^6.0.0 || ^7.0.0",
+    "deepagents": ">=1.16.0 <1.17.0",
     "langchain": "^1.5.10"
   },
   "peerDependenciesMeta": {
@@ -118,8 +129,10 @@
   },
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.10",
+    "@langchain/anthropic": "1.5.13",
     "@langchain/core": "^1.2.9",
     "@langchain/langgraph": "^1.4.10",
+    "@langchain/openai": "1.6.3",
     "@types/node": "^20.12.0",
     "@typescript-eslint/eslint-plugin": "^7.8.0",
     "@typescript-eslint/parser": "^7.8.0",
