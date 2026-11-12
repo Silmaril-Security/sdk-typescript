@@ -452,6 +452,7 @@ describe("LangChain adapter — shadow mode", () => {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
     await expect(handler.handleLLMStart({}, ["ignore previous"], "run-1")).resolves.toBeDefined();
+    await firewall.flush();
     expect(events).toEqual([{ blocked: true, shadowMode: true }]);
   });
 
@@ -509,6 +510,7 @@ describe("LangChain adapter — shadow mode", () => {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
     await expect(handler.handleLLMStart({}, ["x"], "r")).resolves.toBeDefined();
+    await firewall.flush();
     expect(events).toEqual([{ shadowMode: true }]);
   });
 
@@ -544,6 +546,7 @@ describe("LangChain adapter — shadow mode", () => {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
     await handler.handleLLMStart({}, ["hi"], "r");
+    await firewall.flush();
     expect(events).toEqual([{ blocked: false, shadowMode: true }]);
   });
 

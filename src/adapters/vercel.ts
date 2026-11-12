@@ -5,6 +5,7 @@ import type { Firewall } from "../firewall.js";
 import { FirewallBlockedException } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
 import { validateMode } from "../modes.js";
+import { alongside } from "../pending.js";
 import type { BlockResult, MiddlewareOptions } from "../types.js";
 
 interface VercelContentPart {
@@ -33,6 +34,8 @@ interface VercelToolCall {
 interface VercelGenerateResult {
   text?: string;
   toolCalls?: ReadonlyArray<VercelToolCall>;
+  /** AI SDK 5 and 6 return generated text and tool calls as ordered content parts. */
+  content?: ReadonlyArray<VercelContentPart & VercelToolCall>;
 }
 
 interface WrapGenerateArgs<TResult extends VercelGenerateResult & Record<string, unknown>> {
@@ -159,7 +162,8 @@ export function createMiddleware(
   options: MiddlewareOptions = {},
 ): FirewallMiddleware {
   const scanInput = options.scanInput ?? true;
-  const scanOutput = options.scanOutput ?? false;
+  const scanOutput = options.scanOutput ?? true;
+  const parallel = options.parallel ?? false;
   const requestedMode = validateMode(options.mode) ?? (
     options.shadowMode === undefined
       ? firewall.mode
@@ -175,7 +179,7 @@ export function createMiddleware(
       return;
     }
     const { toolName, toolCallId } = context;
-    const result: BlockResult = await firewall.classify(
+    const classify = (): Promise<BlockResult> => firewall.classify(
       text,
       {
         hook,
@@ -183,6 +187,7 @@ export function createMiddleware(
         ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
       },
     );
+    const result = await (parallel ? firewall.pending.submit(classify) : classify());
     const threshold = result.threshold;
     const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
     const effectiveMode = requestedMode ?? result.mode ?? "block";
@@ -248,11 +253,18 @@ export function createMiddleware(
   };
 
   const scanGenerateResult = async (result: VercelGenerateResult): Promise<void> => {
-    if (scanOutput && typeof result.text === "string" && result.text.length > 0) {
-      await classifyOrBlock(result.text, HookLabel.LLM_OUTPUT);
+    const content = Array.isArray(result.content) ? result.content : [];
+    const text = typeof result.text === "string"
+      ? result.text
+      : content.filter((part) => part?.type === "text").map((part) => part.text ?? "").join("");
+    if (scanOutput && text.length > 0) {
+      await classifyOrBlock(text, HookLabel.LLM_OUTPUT);
     }
-    if (options.scanToolCalls && Array.isArray(result.toolCalls)) {
-      for (const call of result.toolCalls) {
+    const toolCalls = Array.isArray(result.toolCalls)
+      ? result.toolCalls
+      : content.filter((part) => part?.type === "tool-call");
+    if (options.scanToolCalls) {
+      for (const call of toolCalls) {
         if (!call || typeof call !== "object") {
           continue;
         }
@@ -268,6 +280,21 @@ export function createMiddleware(
     }
   };
 
+  const guarded = async <T>(
+    prompt: ReadonlyArray<VercelPromptMessage>,
+    run: () => PromiseLike<T>,
+    discard?: (result: T) => void,
+  ): Promise<T> => {
+    if (!scanInput) {
+      return run();
+    }
+    if (parallel) {
+      return alongside(scanPrompt(prompt), run, discard);
+    }
+    await scanPrompt(prompt);
+    return run();
+  };
+
   return {
     specificationVersion: "v3",
     middlewareVersion: "v2",
@@ -276,10 +303,7 @@ export function createMiddleware(
       params,
       doGenerate,
     }: WrapGenerateArgs<TResult>): Promise<TResult> {
-      if (scanInput) {
-        await scanPrompt(params.prompt ?? []);
-      }
-      const result = await doGenerate();
+      const result = await guarded(params.prompt ?? [], doGenerate);
       await scanGenerateResult(result);
       return result;
     },
@@ -288,10 +312,9 @@ export function createMiddleware(
       params,
       doStream,
     }: WrapStreamArgs<TResult>): Promise<TResult> {
-      if (scanInput) {
-        await scanPrompt(params.prompt ?? []);
-      }
-      const { stream, ...rest } = await doStream();
+      const { stream, ...rest } = await guarded(params.prompt ?? [], doStream, (started) => {
+        void started.stream.cancel().catch(() => undefined);
+      });
       if (!scanOutput) {
         return { stream, ...rest } as unknown as TResult;
       }

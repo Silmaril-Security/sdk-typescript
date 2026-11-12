@@ -17,8 +17,14 @@ import {
   HookLabel,
   resolveHooks,
 } from "../hooks.js";
-import type { BlockResult, ClassifyEvent, LangChainAdapterOptions } from "../types.js";
+import type {
+  BlockResult,
+  ClassifyEvent,
+  ClassifyOptions,
+  LangChainAdapterOptions,
+} from "../types.js";
 import { validateMode } from "../modes.js";
+import { Deferred, conversationId } from "../pending.js";
 import {
   extractTextFromDocuments,
   extractTextFromLLMResult,
@@ -31,6 +37,10 @@ import { rejectConversationOptions, RunThreadIdentity, validThreadId } from "./t
 const handlerCleanups = new WeakMap<object, () => void>();
 
 const USER_ROLES: ReadonlySet<string> = new Set(["human", "user"]);
+const DEFERRED_LABELS: ReadonlySet<HookLabel> = new Set([
+  HookLabel.USER_INPUT,
+  HookLabel.TOOL_RESPONSE,
+]);
 
 interface LangChainDucktypedMessage {
   role?: string;
@@ -96,7 +106,16 @@ async function buildLangChainHandler(
   const { ensureConfig } = await import("@langchain/core/runnables");
   const threads = new RunThreadIdentity(boundIdentity, () => ensureConfig());
   const { BaseTracer } = await import("@langchain/core/tracers/base");
-  let finishRun = (runId: string): void => { threads.finish(runId); };
+  const deferred = new Deferred();
+  const dropScope = (runId: string): void => {
+    if (threads.root(runId) === runId) {
+      deferred.drop(runId);
+    }
+  };
+  let finishRun = (runId: string): void => {
+    dropScope(runId);
+    threads.finish(runId);
+  };
 
   const enabledHooks = resolveHooks(options.hooks);
   // includeSystem remains inert for the user-only chat-model scan.
@@ -127,23 +146,52 @@ async function buildLangChainHandler(
     }
   };
 
-  const classifyEvent = async (
+  const parallel = options.parallel ?? false;
+  const background = requestedMode === "shadow" && failOpen;
+
+  const report = (
+    result: BlockResult,
     text: string,
     hookLabel: HookLabel,
     runId: string,
     toolName?: string,
+  ): void => {
+    const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
+    const effectiveMode = requestedMode ?? result.mode ?? "block";
+    fireOnClassify({
+      hook: hookLabel,
+      ...(toolName !== undefined ? { toolName } : {}),
+      runId,
+      text,
+      result,
+      blocked,
+      mode: effectiveMode,
+      shadowMode: effectiveMode === "shadow",
+    });
+    if (!blocked || effectiveMode !== "block") {
+      return;
+    }
+    throw new FirewallBlockedException({
+      score: result.score,
+      threshold: result.threshold,
+      promptText: text,
+      runId,
+      hook: hookLabel,
+      ...(toolName !== undefined ? { toolName } : {}),
+      result,
+    });
+  };
+
+  const classifyEvent = async (
+    text: string,
+    hookLabel: HookLabel,
+    runId: string,
+    request: ClassifyOptions,
+    toolName?: string,
   ): Promise<void> => {
     let result: BlockResult;
     try {
-      result = await firewall.classify(text, {
-        hook: hookLabel,
-        metadata: {
-          langgraph: { run_id: runId },
-          ...(threads.get(runId) === undefined ? {} : { conversationId: threads.get(runId) }),
-        },
-        ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
-        ...(toolName !== undefined ? { toolName } : {}),
-      });
+      result = await firewall.classify(text, request);
     } catch (err) {
       if (isReviewCompatibilityError(err)) {
         throw err;
@@ -154,40 +202,53 @@ async function buildLangChainHandler(
       logger("classification failed, allowing prompt through", err);
       return;
     }
-    const threshold = result.threshold;
-    const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
-    const effectiveMode = requestedMode ?? result.mode ?? "block";
-    const commonEventFields = {
-      hook: hookLabel,
-      ...(toolName !== undefined ? { toolName } : {}),
-      runId,
-      text,
-      result,
-    };
-    fireOnClassify({
-      ...commonEventFields,
-      blocked,
-      mode: effectiveMode,
-      shadowMode: effectiveMode === "shadow",
-    });
-    if (!blocked || effectiveMode !== "block") {
-      return;
-    }
+    report(result, text, hookLabel, runId, toolName);
+  };
 
-    throw new FirewallBlockedException({
-      score: result.score,
-      threshold,
-      promptText: text,
-      runId,
-      hook: hookLabel,
-      ...(toolName !== undefined ? { toolName } : {}),
-      result,
-    });
+  const settle = (runId: string): Promise<void> => deferred.join(threads.root(runId));
+
+  const settleRoot = async (runId: string): Promise<void> => {
+    if (threads.root(runId) === runId) {
+      await settle(runId);
+    }
+  };
+
+  const checkLanded = (runId: string): void => {
+    try {
+      deferred.check(threads.root(runId));
+    } catch (error) {
+      finishRun(runId);
+      throw error;
+    }
   };
 
   const classify = async (text: string, hook: HookLabel, runId: string, toolName?: string): Promise<void> => {
+    const request: ClassifyOptions = {
+      hook,
+      metadata: {
+        langgraph: { run_id: runId },
+        ...(threads.get(runId) === undefined ? {} : { conversationId: threads.get(runId) }),
+      },
+      ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
+      ...(toolName !== undefined ? { toolName } : {}),
+    };
+    const conversation = conversationId(request.metadata);
+    const check = (): Promise<void> => classifyEvent(text, hook, runId, request, toolName);
     try {
-      await classifyEvent(text, hook, runId, toolName);
+      if (background) {
+        void firewall.observe(text, request).then((result) => {
+          if (result !== undefined) {
+            report(result, text, hook, runId, toolName);
+          }
+        });
+      } else if (!parallel) {
+        await check();
+      } else if (DEFERRED_LABELS.has(hook)) {
+        deferred.add(threads.root(runId), firewall.pending.submit(check, conversation));
+      } else {
+        await settle(runId);
+        await firewall.pending.submit(check, conversation);
+      }
     } catch (error) {
       finishRun(runId);
       throw error;
@@ -234,11 +295,13 @@ async function buildLangChainHandler(
     override async handleAgentAction(): Promise<void> {}
     override async handleAgentEnd(): Promise<void> {}
     override async handleLLMNewToken(_token: string, _idx: unknown, runId: string): Promise<Run> {
+      checkLanded(runId);
       return this.getRunById(runId) ?? this._createRunForLLMStart(serialized(undefined, "llm"), [], runId);
     }
 
     capture(runId: string, parentRunId?: string, metadata?: unknown): void {
       for (const id of threads.start(runId, parentRunId, metadata)) {
+        deferred.drop(id);
         this.runMap.delete(id);
         this.runTreeMap?.delete(id);
       }
@@ -246,6 +309,7 @@ async function buildLangChainHandler(
 
     finishAll(): void {
       for (const id of [...this.runMap.keys()]) this.finishRun(id);
+      deferred.clear();
       this.runTreeMap?.clear();
     }
 
@@ -342,6 +406,7 @@ async function buildLangChainHandler(
     override async handleLLMEnd(output: unknown, runId: string): Promise<Run> {
       try {
         if (!this.getRunById(runId)) this._createRunForLLMStart(serialized(undefined, "llm"), [], runId);
+        await settle(runId);
         if (enabledHooks.has(FirewallHook.LLM_END)) {
           const text = extractTextFromLLMResult(output as Parameters<typeof extractTextFromLLMResult>[0]);
           if (text) await classify(text, FIREWALL_HOOK_TO_LABEL[FirewallHook.LLM_END], runId);
@@ -361,6 +426,7 @@ async function buildLangChainHandler(
           const text = String(output).trim();
           if (text) await classify(text, FIREWALL_HOOK_TO_LABEL[FirewallHook.TOOL_END], runId, kwargs?.name);
         }
+        await settleRoot(runId);
         return await super.handleToolEnd(output, runId);
       } finally {
         finishRun(runId);
@@ -374,6 +440,7 @@ async function buildLangChainHandler(
           const text = extractTextFromDocuments(documents);
           if (text) await classify(text, FIREWALL_HOOK_TO_LABEL[FirewallHook.RETRIEVER_END], runId);
         }
+        await settleRoot(runId);
         return await super.handleRetrieverEnd(documents as Parameters<BaseTracerType["handleRetrieverEnd"]>[0], runId);
       } finally {
         finishRun(runId);
@@ -384,12 +451,17 @@ async function buildLangChainHandler(
       chain: unknown, inputs: Record<string, unknown>, runId: string, parentRunId?: string,
       tags?: string[], metadata?: Record<string, unknown>, runType?: string, name?: string,
     ): Promise<Run> {
-      return super.handleChainStart(serialized(chain, "chain"), inputs, runId, parentRunId, tags, metadata, runType, name);
+      const run = await super.handleChainStart(serialized(chain, "chain"), inputs, runId, parentRunId, tags, metadata, runType, name);
+      checkLanded(runId);
+      return run;
     }
 
     override async handleChainEnd(...args: Parameters<BaseTracerType["handleChainEnd"]>): Promise<Run> {
       if (!this.getRunById(args[1])) this._createRunForChainStart(serialized(undefined, "chain"), {}, args[1]);
-      try { return await super.handleChainEnd(...args); } finally { finishRun(args[1]); }
+      try {
+        await settleRoot(args[1]);
+        return await super.handleChainEnd(...args);
+      } finally { finishRun(args[1]); }
     }
 
     override async handleChainError(...args: Parameters<BaseTracerType["handleChainError"]>): Promise<Run> {
@@ -414,7 +486,10 @@ async function buildLangChainHandler(
   }
 
   const handler = new SilmarilFirewallHandler();
-  finishRun = (runId: string): void => { handler.finishRun(runId); };
+  finishRun = (runId: string): void => {
+    dropScope(runId);
+    handler.finishRun(runId);
+  };
   handlerCleanups.set(handler, () => handler.finishAll());
   return handler;
 }

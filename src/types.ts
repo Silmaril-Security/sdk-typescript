@@ -68,6 +68,10 @@ export interface FirewallOptions {
   review?: ReviewLevel;
   /** @deprecated Use mode: "shadow" or mode: "block". */
   shadowMode?: boolean;
+  /** Classifications allowed in flight beside the host flow. Default 32. */
+  maxConcurrent?: number;
+  /** Unjoined background classifications kept per conversation. Default 64. */
+  maxQueued?: number;
 }
 
 export type ClassificationMetadata = Readonly<Record<string, unknown>>;
@@ -87,6 +91,13 @@ export interface ClassifyOptions {
    * and rejects with the signal's reason; sibling calls are unaffected.
    */
   signal?: AbortSignal;
+}
+
+export interface ProtectOptions<TResult> extends ClassifyOptions {
+  /** Input classified while the operation runs. */
+  text: string;
+  /** Extracts model output to classify as llm_output before the result is returned. */
+  output?: (result: TResult) => string;
 }
 
 export interface ClassifyBatchOptions {
@@ -117,6 +128,8 @@ export interface LangChainAdapterOptions {
   /** @deprecated Use mode: "shadow" or mode: "block". */
   shadowMode?: boolean;
   onClassify?: (event: ClassifyEvent) => void;
+  /** Run input and tool-result checks beside the model call and join them before output is used. */
+  parallel?: boolean;
 }
 
 export interface LangChainFirewallHandler {
@@ -154,4 +167,6 @@ export interface MiddlewareOptions {
   shadowMode?: boolean;
   onBlocked?: (err: Error) => void;
   onClassify?: (event: ClassifyEvent) => void;
+  /** Run the input check beside the model call and withhold the result until its verdict. */
+  parallel?: boolean;
 }

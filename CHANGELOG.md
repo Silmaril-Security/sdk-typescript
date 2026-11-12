@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.10.0
+
+- Classify model output by default: `LLM_END` joins `DEFAULT_HOOKS` for the
+  LangChain handler, and `scanOutput` defaults to `true` in both Vercel
+  adapters. On AI SDK 7, Block-mode streams now deliver each text block only
+  after its verdict unless `scanOutput: false` is passed.
+- Read generated text and tool calls from `content` parts in the AI SDK 5/6
+  middleware. Earlier releases read only the legacy `text` and `toolCalls`
+  fields, so `scanOutput` and `scanToolCalls` did not run on generate results.
+- Add `Firewall.protect()`, which runs a call while its input is classified,
+  withholds the result of a blocked input, and aborts the call's signal when
+  the block arrives first.
+- Add a `parallel` option to the LangChain handler,
+  `protectLangChainRunnable()`, the Deep Agents middleware, and both Vercel
+  adapters. Input and tool-result checks run beside the model call; tool-call
+  and model-output checks still wait for their verdict.
+- Classify in the background in Shadow mode for the LangChain handler and Deep
+  Agents middleware unless `failOpen` is `false`.
+- Send classifications that share `metadata.conversationId` in the order they
+  were started, including the `protect()` output check. Add `maxConcurrent`
+  and `maxQueued` client options and `flush()`. Background classifications
+  are also capped at `maxConcurrent * maxQueued` across all conversations.
+- Copy `metadata` and `governance` when a queued classification starts, and
+  stop a queued classification waiting once its caller's `signal` aborts.
+- With `parallel`, concurrent LangChain tool starts wait for the same pending
+  checks, a landed block is raised at every later boundary of the run, and
+  the Vercel and Deep Agents adapters send their checks through the client's
+  in-flight limit. Shadow-mode Deep Agents caches a remote notification once
+  its background classification completes.
+
 ## 0.9.1
 
 - Add a separate AI SDK 7 `LanguageModelV4Middleware` export at

@@ -23,6 +23,7 @@ This SDK provides the low-level TypeScript interface for that workflow:
 - Send each complete sanitized event in one request.
 - On individual `classify()` calls, preserve exact `metadata.conversationId` as sequence identity and add one event ID.
 - Retry API rate-limit responses.
+- Optionally classify in parallel with the model call it protects.
 - Optionally attach the firewall to Vercel AI SDK middleware, LangChain.js
   callback flows, and Deep Agents middleware/constructors.
 
@@ -34,10 +35,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-Pin version 0.9.1 for reproducible installs:
+Pin version 0.10.0 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.9.1
+npm install @silmaril-security/sdk@0.10.0
 ```
 
 Requires Node 20 or later.
@@ -296,6 +297,8 @@ interface FirewallOptions {
   mode?: "shadow" | "warn" | "block";                // explicit local client default
   review?: "standard" | "deep";                       // explicit client review default
   shadowMode?: boolean;                               // deprecated legacy mapping
+  maxConcurrent?: number;                             // default: 32 classifications in flight beside the host flow
+  maxQueued?: number;                                 // default: 64 unjoined background checks per conversation; maxConcurrent * maxQueued in total
 }
 ```
 
@@ -548,7 +551,62 @@ sent input. A missing array or mismatched count raises an `Error` before
 results are returned or blocking callbacks run. Retries use the original
 payload snapshot, even if caller-owned inputs change while the request is in flight.
 
+## Parallel Classification
+
+`protect()` runs your call while its input is classified, instead of waiting
+for the verdict first. It takes the same options as `classify()` and returns
+your call's result:
+
+```ts
+const answer = await fw.protect((signal) => callModel(prompt, { signal }), {
+  text: prompt,
+  hook: HookLabel.USER_INPUT,
+  metadata: { conversationId },
+  output: (response) => response.text,
+});
+```
+
+Unlike `classify()`, `protect()` enforces. In Block mode, or when no mode is
+set, the result is withheld until the verdict arrives and a block throws
+`FirewallBlockedException`. The `signal` passed to your call aborts when the
+block lands first; a call that ignores it keeps running and its result is
+discarded. In Shadow and Warn the result is returned immediately and the
+classification finishes in the background. The optional `output` extractor
+classifies the result as `llm_output` before it is returned.
+
+Use `protect()` only for calls whose effect can be discarded. Classify the
+arguments of a tool that writes with `classify()` before running it.
+
+Classifications that share `metadata.conversationId` are sent in the order
+they were started, so parallel checks keep the backend sequence intact. The
+output check waits in that same order. `maxConcurrent` bounds how many run at
+once, including output checks and every check an adapter makes with
+`parallel: true`. The `metadata` and `governance` you pass are
+copied when the call starts, so changing them afterwards does not change a
+classification that is still waiting.
+
+Aborting the `signal` you pass stops a classification that is still waiting
+for its turn, rejects `protect()` with the signal's reason, and aborts your
+operation's signal. Classifications queued after it keep their order.
+
+A background classification retries once, never rejects, logs its failure with
+`console.warn`, and does not follow the caller's `signal`. One that would
+exceed `maxQueued` unjoined checks for its conversation, or
+`maxConcurrent * maxQueued` background checks across all conversations
+(2,048 by default), is dropped with a warning. `await fw.flush()` waits for
+background classifications to finish, for example before a serverless handler
+returns.
+
 ## Migration Notes
+
+Version `0.10.0` classifies model output by default. The LangChain handler adds
+`LLM_END` to `DEFAULT_HOOKS`, and both Vercel adapters default `scanOutput` to
+`true`. Pass `hooks` without `FirewallHook.LLM_END`, or `scanOutput: false`,
+to keep the previous behavior. On AI SDK 7 this means Block-mode streams
+deliver each text block only after its verdict; see the Vercel AI SDK 7
+section. Shadow-mode LangChain handlers and Deep Agents middleware now classify
+in the background unless `failOpen` is `false`, so `onClassify` can run after
+the hook returns.
 
 Version `0.4.1` is the public npm recovery release for `0.4.x`: the `v0.4.0`
 Git tag exists, but `@silmaril-security/sdk@0.4.0` was not published to npm.
@@ -580,19 +638,28 @@ const { text } = await generateText({ model, prompt: "Hello" });
 console.log(text);
 ```
 
-Middleware scans input by default (`scanInput` defaults to true). It classifies
-that message's tool-result parts as `tool_response` only when the newest prompt
-message is a tool message. Otherwise it classifies the latest user message as
-`user_input` and does not scan earlier tool results. Set `scanOutput: true` to
-classify model text, and `scanToolCalls: true` to classify tool-call arguments
-on generate results. Infrastructure errors and blocking decisions are
-fail-closed by default and bubble up to the caller.
+Middleware scans input and generated text by default (`scanInput` and
+`scanOutput` default to true). It classifies that message's tool-result parts
+as `tool_response` only when the newest prompt message is a tool message.
+Otherwise it classifies the latest user message as `user_input` and does not
+scan earlier tool results. Set `scanOutput: false` to skip model text, and
+`scanToolCalls: true` to classify tool-call arguments on generate results.
+Generated text and tool calls are read from the `content` parts that AI SDK 5
+and 6 return; releases before 0.10.0 read only the legacy `text` and
+`toolCalls` fields, so those checks did not run on generate results there.
+Infrastructure errors and blocking decisions are fail-closed by default and
+bubble up to the caller.
 
-When `scanOutput: true` is combined with streaming, output is classified in the
-stream's `flush` after all deltas have been emitted, so blocking is advisory:
-the consumer has already seen the text by the time an error part is enqueued.
-Use non-streaming generation if you need to block before the caller observes
-output.
+With streaming, output is classified in the stream's `flush` after all deltas
+have been emitted, so blocking is advisory: the consumer has already seen the
+text by the time an error part is enqueued. Use non-streaming generation if
+you need to block before the caller observes output.
+
+Set `parallel: true` to run the input check beside the model call. The result,
+or the stream, is withheld until that verdict arrives; a blocked input throws
+and a stream that already started is cancelled. Because this middleware fails
+closed, Shadow and Warn checks are still awaited rather than moved to the
+background, so classification errors keep reaching the caller.
 
 ### Vercel AI SDK 7
 
@@ -626,7 +693,11 @@ console.log(result.text);
 
 The v4 adapter reads generated text and tool calls from `result.content`, and
 classifies prompt tool-result parts with their tool name and call ID. Reasoning
-parts are passed through unchanged and are not classified.
+parts are passed through unchanged and are not classified. `scanOutput`
+defaults to true, so in effective or possible Block mode a stream delivers
+each text block only once it is complete and has a verdict, not token by
+token. Pass `scanOutput: false`, or select Shadow or Warn, to keep incremental
+delivery. `parallel: true` behaves as it does for the AI SDK 5/6 middleware.
 
 For streaming, text and tool-input sequences are tracked by ID. In effective or
 possible Block mode, the adapter retains original text and tool-input parts in a
@@ -695,8 +766,18 @@ and the LLM call proceeds. Set `failOpen: false` to make API errors bubble up.
 Blocking decisions throw `FirewallBlockedException` only when the effective mode
 is Block; Shadow and Warn preserve the host flow.
 `PromptBlockedException` continues to work as a deprecated alias.
-Model-start, tool-start, and tool-end hooks are enabled by default; retriever
-and model-end (`LLM_END`) hooks remain opt-in. The LangChain run ID is sent as
+Model-start, tool-start, tool-end, and model-end (`LLM_END`) hooks are enabled
+by default; retriever hooks remain opt-in. With streaming, the model-end check
+runs after tokens are emitted: a block stops the run and cannot recall them.
+Pass `parallel: true` to the handler or to `protectLangChainRunnable()` to run
+the `user_input` and `tool_response` checks beside the model call. They are
+joined when the model call ends, before a tool starts, and when the run ends;
+the `tool_call` and `llm_output` checks always wait for their verdict. Tools
+that start concurrently all wait for the same pending checks. A block that has
+already arrived is thrown at the next callback, including the next streamed
+token, and at every later boundary until the run ends. Callbacks cannot cancel
+a model call, so a late block discards its output. In Shadow mode every check runs in the background and nothing is
+joined, unless `failOpen: false` requires each classification to succeed. The LangChain run ID is sent as
 `metadata.langgraph.run_id`; every classification gets a distinct
 `metadata.silmaril.request_id`. The current native thread ID is sent as
 `metadata.conversationId` without a separate Silmaril conversation option.
@@ -784,6 +865,13 @@ and Warn report decisions through `onClassify` without replacing content.
 Classification errors allow model and tool execution by default; set
 `silmaril: { failOpen: false }` to require a successful classification. Already
 emitted streaming text cannot be recalled.
+
+Set `silmaril: { parallel: true }` to classify user input while the model call
+runs. A blocked input replaces the response without waiting for the model.
+Tool calls and tool results still wait for their verdict, because a denied
+result is replaced before it enters agent state, and the input check waits
+again once `maxBlockedAttempts` is reached. Shadow mode classifies in the
+background unless `failOpen` is `false`.
 
 ### Remote subagents
 
@@ -873,7 +961,7 @@ checkpoint namespaces do not change the conversation ID. The direct
 ## Retries
 
 HTTP 429 responses are retried with exponential backoff capped at 30s, up to 5
-times. The retried response body is discarded before the wait, and each request
+times, or once for a background classification. The retried response body is discarded before the wait, and each request
 payload is serialized once so every attempt sends the same logical event.
 Redirects are rejected rather than followed; native `fetch` surfaces that
 refusal as a `TypeError` without a reliable redirect status. Actually received

@@ -44,7 +44,8 @@ describe("Hook sets", () => {
     expect(DEFAULT_HOOKS.has(FirewallHook.LLM_START)).toBe(true);
     expect(DEFAULT_HOOKS.has(FirewallHook.TOOL_START)).toBe(true);
     expect(DEFAULT_HOOKS.has(FirewallHook.TOOL_END)).toBe(true);
-    expect(DEFAULT_HOOKS.size).toBe(4);
+    expect(DEFAULT_HOOKS.has(FirewallHook.LLM_END)).toBe(true);
+    expect(DEFAULT_HOOKS.size).toBe(5);
   });
 
   it("INPUT_HOOKS and OUTPUT_HOOKS are disjoint", () => {
