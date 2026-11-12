@@ -348,6 +348,22 @@ describe("queued classifications", () => {
     await Promise.all([first, last]);
   });
 
+  it("still run a shadow-mode operation whose request cannot be copied", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const gated = gatedFirewall({ mode: "shadow" });
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    await expect(gated.firewall.protect(async () => "answer", {
+      text: "prompt",
+      metadata: cyclic,
+      output: (result) => result,
+    })).resolves.toBe("answer");
+
+    expect(gated.calls).toHaveLength(0);
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
   it("report a background request that cannot be copied instead of throwing", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const gated = gatedFirewall({ mode: "shadow" });

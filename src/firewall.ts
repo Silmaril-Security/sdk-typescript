@@ -216,6 +216,16 @@ function snapshotRequest(options: ClassifyOptions): ClassifyOptions {
   };
 }
 
+function outputRequest(input: ClassifyOptions): ClassifyOptions {
+  return {
+    hook: HookLabel.LLM_OUTPUT,
+    ...(input.mode === undefined ? {} : { mode: input.mode }),
+    ...(input.review === undefined ? {} : { review: input.review }),
+    ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -579,24 +589,21 @@ export class Firewall {
   ): Promise<TResult> {
     const { text, output, ...request } = options;
     const requestedMode = validateMode(options.mode) ?? this.mode;
-    const input = snapshotRequest(request);
-    const conversation = conversationId(input.metadata);
-    const outputOptions: ClassifyOptions = {
-      hook: HookLabel.LLM_OUTPUT,
-      ...(input.mode === undefined ? {} : { mode: input.mode }),
-      ...(input.review === undefined ? {} : { review: input.review }),
-      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
-    };
     const controller = new AbortController();
     if (requestedMode === "shadow" || requestedMode === "warn") {
-      void this.observe(text, input);
+      const observed = this.observable(request);
+      if (observed !== undefined) {
+        void this.background(text, observed);
+      }
       const result = await operation(controller.signal);
-      if (output !== undefined) {
-        void this.observe(output(result), outputOptions);
+      if (observed !== undefined && output !== undefined) {
+        void this.background(output(result), outputRequest(observed));
       }
       return result;
     }
+    const input = snapshotRequest(request);
+    const conversation = conversationId(input.metadata);
+    const outputOptions = outputRequest(input);
     const verdict = this.pending.submit(() => this.enforce(text, input), conversation, input.signal);
     const [, result] = await Promise.all([
       verdict.catch((error: unknown) => {
@@ -626,15 +633,24 @@ export class Firewall {
    * The request is copied now and detached from the caller's signal.
    */
   observe(text: string, options: ClassifyOptions = {}): Promise<BlockResult | undefined> {
-    let request: ClassifyOptions;
+    const request = this.observable(options);
+    return request === undefined ? Promise.resolve(undefined) : this.background(text, request);
+  }
+
+  private background(text: string, request: ClassifyOptions): Promise<BlockResult | undefined> {
+    return this.pending.observe(() => this.classify(text, request), conversationId(request.metadata));
+  }
+
+  /** Copy a background request, reporting one that cannot be copied instead of failing the caller. */
+  private observable(options: ClassifyOptions): ClassifyOptions | undefined {
     try {
-      request = snapshotRequest(options);
+      const request = snapshotRequest(options);
+      delete request.signal;
+      return request;
     } catch (error) {
       reportBackground("background classification failed", error);
-      return Promise.resolve(undefined);
+      return undefined;
     }
-    delete request.signal;
-    return this.pending.observe(() => this.classify(text, request), conversationId(request.metadata));
   }
 
   private async enforce(text: string, options: ClassifyOptions): Promise<BlockResult> {
