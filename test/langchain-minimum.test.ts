@@ -45,10 +45,10 @@ it("resolves saved native defaults and dynamic factories before protection on mi
   const native = new FakeListChatModel({ responses: ["result"] });
   const saved = await protectLangChainRunnable(fw, native.withConfig({ configurable: { thread_id: "saved" } }));
   await saved.invoke("hello");
-  expect(ids).toEqual(["saved"]);
+  expect(ids).toEqual(["saved", "saved"]);
   const factory = vi.fn(() => ({ configurable: { thread_id: "dynamic" } }));
   const dynamic = await protectLangChainRunnable(fw, new RunnableBinding({ bound: native, config: {}, configFactories: [factory] }));
   await dynamic.invoke("hello");
-  expect(ids).toEqual(["saved", "dynamic"]);
+  expect(ids).toEqual(["saved", "saved", "dynamic", "dynamic"]);
   expect(factory).toHaveBeenCalledTimes(1);
 });

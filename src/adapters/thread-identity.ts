@@ -118,6 +118,20 @@ export class RunThreadIdentity {
     return discarded;
   }
 
+  /** The outermost tracked ancestor, which scopes verdicts deferred by its descendants. */
+  root(runId: string): string {
+    const visited = new Set([runId]);
+    let current = runId;
+    for (;;) {
+      const parent = this.runs.get(current)?.parentRunId;
+      if (parent === undefined || visited.has(parent) || !this.runs.has(parent)) {
+        return current;
+      }
+      visited.add(parent);
+      current = parent;
+    }
+  }
+
   get(runId: string): string | undefined {
     const run = this.runs.get(runId);
     return run ? run.threadId : this.boundIdentity?.threadId;

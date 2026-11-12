@@ -15,6 +15,7 @@ jobs:
   test:
     name: Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +55,7 @@ jobs:
   framework-compatibility:
     name: Framework ${{ matrix.framework }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -70,7 +72,7 @@ jobs:
         run: npm install --ignore-scripts --no-save --package-lock=false --legacy-peer-deps @langchain/core@0.3.80
       - name: Test minimum standalone LangChain
         if: matrix.framework == 'langchain-minimum'
-        run: npx vitest run test/langchain.test.ts test/langchain-minimum.test.ts
+        run: npx vitest run test/langchain.test.ts test/langchain-minimum.test.ts test/parallel.test.ts test/parallel-langchain.test.ts
       - name: Install minimum agent dependencies
         if: matrix.framework == 'deepagents-minimum'
         run: npm install --ignore-scripts --no-save --package-lock=false @langchain/core@1.2.14 @langchain/langgraph@1.4.10 @langchain/langgraph-sdk@1.9.23 @langchain/anthropic@1.5.12 @langchain/openai@1.6.2 langchain@1.5.10 deepagents@1.16.0
@@ -79,11 +81,12 @@ jobs:
         run: npm install --ignore-scripts --no-save --package-lock=false '@langchain/core@latest' '@langchain/langgraph@^1.4.10' 'langchain@^1.5.10' 'deepagents@>=1.16.0 <1.17.0'
       - name: Test actual agent and graph integrations
         if: matrix.framework != 'langchain-minimum'
-        run: npx vitest run test/langchain-minimum.test.ts test/thread-identity.test.ts test/deepagents-graph.test.ts test/deepagents-remote.test.ts test/deepagents.test.ts test/langchain.test.ts
+        run: npx vitest run test/langchain-minimum.test.ts test/thread-identity.test.ts test/deepagents-graph.test.ts test/deepagents-remote.test.ts test/deepagents.test.ts test/langchain.test.ts test/parallel.test.ts test/parallel-langchain.test.ts test/parallel-deepagents.test.ts
 
   vercel-ai-v3-compatibility:
     name: Vercel AI ${{ matrix.ai-version }} v3 adapter
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -98,13 +101,14 @@ jobs:
       - name: Install retained AI SDK release
         run: npm install --ignore-scripts --no-save --package-lock=false --legacy-peer-deps ai@${{ matrix.ai-version }}
       - name: Test existing v3 adapter
-        run: npx vitest run test/vercel.test.ts
+        run: npx vitest run test/vercel.test.ts test/parallel-vercel.test.ts
       - name: Build all package exports
         run: npm run build
 
   vercel-ai-v4-contract:
     name: Vercel AI 7.0.166 v4 contract
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

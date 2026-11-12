@@ -11,6 +11,7 @@ import type { Firewall } from "../firewall.js";
 import { FirewallBlockedException } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
 import { validateMode } from "../modes.js";
+import { alongside } from "../pending.js";
 import type { BlockResult, MiddlewareOptions } from "../types.js";
 
 export const DEFAULT_V4_MAX_BUFFERED_BYTES = 1_048_576;
@@ -253,8 +254,9 @@ export function createMiddlewareV4(
   options: VercelV4MiddlewareOptions = {},
 ): FirewallMiddlewareV4 {
   const scanInput = options.scanInput ?? true;
-  const scanOutput = options.scanOutput ?? false;
+  const scanOutput = options.scanOutput ?? true;
   const scanToolCalls = options.scanToolCalls ?? false;
+  const parallel = options.parallel ?? false;
   const requestedMode = validateMode(options.mode) ?? (
     options.shadowMode === undefined
       ? firewall.mode
@@ -384,6 +386,17 @@ export function createMiddlewareV4(
     await flushText();
   };
 
+  const guarded = async <T>(
+    params: V4CallOptions,
+    run: () => PromiseLike<T>,
+    discard?: (result: T) => void,
+  ): Promise<T> => {
+    if (!scanInput) return run();
+    if (parallel) return alongside(scanPrompt(params.prompt, params.abortSignal), run, discard);
+    await scanPrompt(params.prompt, params.abortSignal);
+    return run();
+  };
+
   return {
     specificationVersion: "v4",
 
@@ -391,8 +404,7 @@ export function createMiddlewareV4(
       params,
       doGenerate,
     }: WrapGenerateArgs<TResult>): Promise<TResult> {
-      if (scanInput) await scanPrompt(params.prompt, params.abortSignal);
-      const result = await doGenerate();
+      const result = await guarded(params, doGenerate);
       await scanGenerateResult(result, params.abortSignal);
       return result;
     },
@@ -401,8 +413,9 @@ export function createMiddlewareV4(
       params,
       doStream,
     }: WrapStreamArgs<TResult>): Promise<TResult> {
-      if (scanInput) await scanPrompt(params.prompt, params.abortSignal);
-      const result = await doStream();
+      const result = await guarded(params, doStream, (started) => {
+        void started.stream.cancel().catch(() => undefined);
+      });
 
       if (!scanOutput && !scanToolCalls) return result;
 

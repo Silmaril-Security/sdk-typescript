@@ -64,6 +64,7 @@ export type {
   FirewallOptions,
   ClassifyOptions,
   ClassifyBatchOptions,
+  ProtectOptions,
   LangChainAdapterOptions,
   LangChainFirewallHandler,
   MiddlewareOptions,

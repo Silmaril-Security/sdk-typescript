@@ -4,13 +4,26 @@
 import { randomUUID } from "node:crypto";
 
 import { createMiddleware, type FirewallMiddleware } from "./adapters/vercel.js";
-import { ReviewCompatibilityError, SilmarilApiError } from "./exceptions.js";
+import {
+  FirewallBlockedException,
+  ReviewCompatibilityError,
+  SilmarilApiError,
+} from "./exceptions.js";
+import { HookLabel } from "./hooks.js";
 import { validateMode } from "./modes.js";
 import {
   normalizeHarmfulOutcomeCountMap,
   normalizeHarmfulOutcomeMap,
   normalizePrimaryOutcome,
 } from "./outcomes.js";
+import {
+  DEFAULT_MAX_CONCURRENT,
+  DEFAULT_MAX_QUEUED,
+  PendingVerdicts,
+  conversationId,
+  retryBudget,
+  validateLimit,
+} from "./pending.js";
 import { sanitizeText } from "./sanitization.js";
 import type {
   BlockResult,
@@ -26,10 +39,11 @@ import type {
   LangChainFirewallHandler,
   MiddlewareOptions,
   Prediction,
+  ProtectOptions,
   ReviewLevel,
 } from "./types.js";
 
-export const SDK_VERSION = "0.9.1";
+export const SDK_VERSION = "0.10.0";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
@@ -499,6 +513,8 @@ export class Firewall {
   readonly shadowMode: boolean;
   readonly mode: FirewallMode | undefined;
   readonly review: ReviewLevel | undefined;
+  /** @internal Shared by adapters so one conversation keeps a single send order. */
+  readonly pending: PendingVerdicts;
 
   private readonly headers: Readonly<Record<string, string>>;
 
@@ -523,6 +539,10 @@ export class Firewall {
     this.mode = validateMode(options.mode) ?? legacyMode(options.shadowMode);
     this.review = validateReview(options.review, "review");
     this.shadowMode = this.mode === "shadow";
+    this.pending = new PendingVerdicts(
+      validateLimit("maxConcurrent", options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT),
+      validateLimit("maxQueued", options.maxQueued ?? DEFAULT_MAX_QUEUED),
+    );
     this.headers = Object.freeze({
       "x-api-key": this.apiKey,
       "content-type": "application/json",
@@ -532,6 +552,73 @@ export class Firewall {
   async classify(text: string, options: ClassifyOptions = {}): Promise<BlockResult> {
     const requestId = options.requestId ?? randomUUID();
     return this.classifySingle(sanitizeText(text), options, { requestId });
+  }
+
+  /**
+   * Run an operation while its input is classified and withhold a blocked result.
+   * The operation's signal aborts when a block arrives before it finishes.
+   */
+  async protect<TResult>(
+    operation: (signal: AbortSignal) => PromiseLike<TResult> | TResult,
+    options: ProtectOptions<TResult>,
+  ): Promise<TResult> {
+    const { text, output, ...input } = options;
+    const requestedMode = validateMode(options.mode) ?? this.mode;
+    const conversation = conversationId(options.metadata);
+    const outputOptions: ClassifyOptions = {
+      hook: HookLabel.LLM_OUTPUT,
+      ...(options.mode === undefined ? {} : { mode: options.mode }),
+      ...(options.review === undefined ? {} : { review: options.review }),
+      ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    };
+    const controller = new AbortController();
+    if (requestedMode === "shadow" || requestedMode === "warn") {
+      void this.observe(text, input);
+      const result = await operation(controller.signal);
+      if (output !== undefined) {
+        void this.observe(output(result), outputOptions);
+      }
+      return result;
+    }
+    const verdict = this.pending.submit(() => this.enforce(text, input), conversation);
+    const [, result] = await Promise.all([
+      verdict.catch((error: unknown) => {
+        controller.abort(error);
+        throw error;
+      }),
+      Promise.resolve().then(() => operation(controller.signal)),
+    ]);
+    if (output !== undefined) {
+      await this.enforce(output(result), outputOptions);
+    }
+    return result;
+  }
+
+  /** Wait for classifications still running in the background. */
+  flush(): Promise<void> {
+    return this.pending.drain();
+  }
+
+  /** @internal Classify in the background with one retry; resolves undefined on failure. */
+  observe(text: string, options: ClassifyOptions = {}): Promise<BlockResult | undefined> {
+    return this.pending.observe(() => this.classify(text, options), conversationId(options.metadata));
+  }
+
+  private async enforce(text: string, options: ClassifyOptions): Promise<BlockResult> {
+    const result = await this.classify(text, options);
+    const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
+    if (blocked && (result.mode ?? "block") === "block") {
+      throw new FirewallBlockedException({
+        score: result.score,
+        threshold: result.threshold,
+        promptText: text,
+        ...(options.hook === undefined ? {} : { hook: options.hook }),
+        ...(options.toolName === undefined ? {} : { toolName: options.toolName }),
+        result,
+      });
+    }
+    return result;
   }
 
   async classifyBatch(
@@ -624,8 +711,8 @@ export class Firewall {
   private async postWithRetry<T>(
     payload: SingleClassifyPayload | BatchClassifyPayload,
     callerSignal?: AbortSignal,
-    maxRetries: number = DEFAULT_MAX_RETRIES,
   ): Promise<T> {
+    const maxRetries = retryBudget(DEFAULT_MAX_RETRIES);
     // Cancellation outranks payload serialization, which can itself throw on
     // cyclic metadata or a throwing `toJSON`.
     callerSignal?.throwIfAborted();

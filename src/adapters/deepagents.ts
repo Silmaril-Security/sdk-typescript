@@ -20,7 +20,8 @@ import type { Firewall } from "../firewall.js";
 import { isReviewCompatibilityError } from "../exceptions.js";
 import { HookLabel } from "../hooks.js";
 import { validateMode } from "../modes.js";
-import type { ClassifyEvent, FirewallMode } from "../types.js";
+import { conversationId as conversationOf } from "../pending.js";
+import type { BlockResult, ClassifyEvent, ClassifyOptions, FirewallMode } from "../types.js";
 
 import { nativeThreadId, rejectConversationOptions } from "./thread-identity.js";
 
@@ -231,6 +232,8 @@ export interface DeepAgentsMiddlewareOptions {
   failOpen?: boolean;
   maxBlockedAttempts?: number;
   onClassify?: (event: ClassifyEvent) => void;
+  /** Classify user input while the model call runs; tool checks still wait for their verdict. */
+  parallel?: boolean;
 }
 
 function textOf(message: { content: unknown }): string {
@@ -300,6 +303,12 @@ async function notificationKey(message: { id?: string; content: unknown; additio
   }
 }
 
+interface Decision {
+  enforce: boolean;
+  mode: FirewallMode | undefined;
+  cacheable?: boolean;
+}
+
 export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgentsMiddlewareOptions = {}) {
   rejectConversationOptions(options);
   const maxBlockedAttempts = options.maxBlockedAttempts ?? 3;
@@ -308,25 +317,38 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
   }
   const effectiveMode = validateMode(options.mode) ?? firewall.mode;
   const notificationChecks = new Map<string, boolean>();
-  const classify = async (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): Promise<{ enforce: boolean; mode: FirewallMode | undefined; cacheable?: boolean }> => {
-    if (!text.trim()) return { enforce: false, mode: effectiveMode };
-    try {
-      const result = await firewall.classify(text, {
-        hook,
-        ...(toolName === undefined ? {} : { toolName }),
-        ...(effectiveMode === undefined ? {} : { mode: effectiveMode }),
-        metadata: { ...(conversationId === undefined ? {} : { conversationId }), ...remoteLineage(ensureConfig()) },
-      });
-      const mode = effectiveMode ?? result.mode ?? "block";
-      const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
-      if (options.onClassify) {
-        try {
-          options.onClassify({ hook, ...(toolName === undefined ? {} : { toolName }), text, result, blocked, mode, shadowMode: mode === "shadow" });
-        } catch {
-          // Observation callbacks do not change enforcement.
-        }
+  const parallel = options.parallel ?? false;
+  const background = effectiveMode === "shadow" && options.failOpen !== false;
+
+  const decide = (result: BlockResult, text: string, hook: HookLabel, toolName?: string): Decision => {
+    const mode = effectiveMode ?? result.mode ?? "block";
+    const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
+    if (options.onClassify) {
+      try {
+        options.onClassify({ hook, ...(toolName === undefined ? {} : { toolName }), text, result, blocked, mode, shadowMode: mode === "shadow" });
+      } catch {
+        // Observation callbacks do not change enforcement.
       }
-      return { enforce: blocked && mode === "block", mode, cacheable: true };
+    }
+    return { enforce: blocked && mode === "block", mode, cacheable: true };
+  };
+
+  const classify = async (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): Promise<Decision> => {
+    if (!text.trim()) return { enforce: false, mode: effectiveMode };
+    const request: ClassifyOptions = {
+      hook,
+      ...(toolName === undefined ? {} : { toolName }),
+      ...(effectiveMode === undefined ? {} : { mode: effectiveMode }),
+      metadata: { ...(conversationId === undefined ? {} : { conversationId }), ...remoteLineage(ensureConfig()) },
+    };
+    if (background) {
+      void firewall.observe(text, request).then((result) => {
+        if (result !== undefined) decide(result, text, hook, toolName);
+      });
+      return { enforce: false, mode: effectiveMode };
+    }
+    try {
+      return decide(await firewall.classify(text, request), text, hook, toolName);
     } catch (error) {
       if (isReviewCompatibilityError(error)) throw error;
       if (options.failOpen === false) throw error;
@@ -374,16 +396,22 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
           && message.additional_kwargs?.silmarilBlocked === BLOCKED_TOOL_MARKER,
       ).length;
       const latestUser = [...request.messages].reverse().find(HumanMessage.isInstance);
-      const inputDecision = latestUser
-        ? await classify(textOf(latestUser), HookLabel.USER_INPUT, conversationId)
-        : undefined;
+      // The blocked-attempt cap needs the verdict first, so the race stops once it is reached.
+      const racesModel = parallel && !background && blockedCount < maxBlockedAttempts;
+      const protectedRequest = request;
+      const running = racesModel ? Promise.resolve().then(() => handler(protectedRequest)) : undefined;
+      running?.catch(() => undefined);
+      const checkInput = (): Promise<Decision> => classify(textOf(latestUser!), HookLabel.USER_INPUT, conversationId);
+      const inputDecision = latestUser === undefined
+        ? undefined
+        : await (racesModel ? firewall.pending.submit(checkInput, conversationOf({ conversationId })) : checkInput());
       if (inputDecision?.enforce) return new AIMessage(SAFE_OUTPUT_MESSAGE);
       const capMode = effectiveMode ?? inputDecision?.mode ?? "block";
       // Only genuine prior Block markers count, and the terminal cap requires current effective Block mode.
       if (blockedCount >= maxBlockedAttempts && capMode === "block") {
         return new AIMessage(SAFE_FINAL_MESSAGE);
       }
-      const response = await handler(request);
+      const response = await (running ?? handler(request));
       if (response instanceof Command && (await classify(textOfStructuredValue(response.update), HookLabel.LLM_OUTPUT, conversationId)).enforce) {
         return new AIMessage(SAFE_OUTPUT_MESSAGE);
       }

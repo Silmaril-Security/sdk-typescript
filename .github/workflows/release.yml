@@ -207,9 +207,14 @@ jobs:
           fi
 
   customer:
-    name: Customer acceptance
+    name: Customer acceptance (${{ matrix.consumer }})
     needs: build
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        consumer: [consumer.mjs, consumer_protect.mjs]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -270,7 +275,7 @@ jobs:
         with:
           sdk: typescript
           artifact: ${{ steps.package.outputs.path }}
-          consumer: customer/consumer.mjs
+          consumer: customer/${{ matrix.consumer }}
           source-sha: ${{ github.sha }}
           framework-sha: 1a77a9bfcb634c2851fb966261f4413e1542e158
         env:
@@ -290,7 +295,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: customer-qualification
+          name: customer-qualification-${{ matrix.consumer }}
           retention-days: 7
           path: results/
           if-no-files-found: warn
