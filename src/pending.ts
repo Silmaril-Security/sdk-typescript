@@ -32,15 +32,13 @@ export function reportBackground(message: string, error?: unknown): void {
   console.warn(`silmaril.firewall: ${message}`, ...(error === undefined ? [] : [error]));
 }
 
+/** Wait for a conversation's earlier classifications, or until the caller aborts. */
 function settled(gate: Promise<unknown>, signal: AbortSignal | undefined): Promise<void> {
-  if (signal === undefined) {
-    return gate.then(() => undefined);
-  }
   return new Promise<void>((resolve, reject) => {
-    const onAbort = (): void => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
+    const onAbort = (): void => reject(signal?.reason);
+    signal?.addEventListener("abort", onAbort, { once: true });
     void gate.then(() => {
-      signal.removeEventListener("abort", onAbort);
+      signal?.removeEventListener("abort", onAbort);
       resolve();
     });
   });
@@ -105,7 +103,7 @@ export class PendingVerdicts {
     this.outstanding.add(pending);
     if (conversation !== undefined) {
       // A cancelled classification settles early, so its successors wait for its predecessor too.
-      const gate = Promise.allSettled([previous, pending]);
+      const gate = Promise.allSettled([previous, pending]).then(() => undefined);
       this.gates.set(conversation, gate);
       this.depths.set(conversation, (this.depths.get(conversation) ?? 0) + 1);
       void gate.then(() => {

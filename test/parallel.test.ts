@@ -159,6 +159,72 @@ describe("queued classifications", () => {
     await other;
   });
 
+  it("run one check at a time across concurrent protect calls at an in-flight limit of one", async () => {
+    const gated = gatedFirewall({ maxConcurrent: 1 });
+
+    const answers = ["a", "b", "c"].map((name) => gated.firewall.protect(async () => `${name}-out`, {
+      text: `${name}-in`,
+      output: (result) => result,
+    }));
+    for (let count = 1; count <= 6; count++) {
+      await gated.arrived(count);
+      await settleQueue();
+      expect(gated.calls).toHaveLength(count);
+      gated.calls[count - 1]!.resolve();
+    }
+
+    await expect(Promise.all(answers)).resolves.toEqual(["a-out", "b-out", "c-out"]);
+    expect(gated.calls.map((call) => call.text).sort()).toEqual([
+      "a-in", "a-out", "b-in", "b-out", "c-in", "c-out",
+    ]);
+  });
+
+  it("keep input and output of concurrent protect calls in order within one conversation", async () => {
+    const gated = gatedFirewall();
+    const metadata = { conversationId: "conversation-1" };
+
+    const answers = ["a", "b"].map((name) => gated.firewall.protect(async () => `${name}-out`, {
+      text: `${name}-in`,
+      metadata,
+      output: (result) => result,
+    }));
+    for (let count = 1; count <= 4; count++) {
+      await gated.arrived(count);
+      await settleQueue();
+      expect(gated.calls).toHaveLength(count);
+      gated.calls[count - 1]!.resolve();
+    }
+
+    await Promise.all(answers);
+    expect(gated.calls.map((call) => call.text)).toEqual(["a-in", "b-in", "a-out", "b-out"]);
+  });
+
+  it("let the remaining queued callers run in turn after one of them aborts", async () => {
+    const gated = gatedFirewall({ maxConcurrent: 1 });
+    const controller = new AbortController();
+    const untilAborted = (signal: AbortSignal): Promise<string> => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason));
+    });
+
+    const first = gated.firewall.protect(async () => "first-out", { text: "first" });
+    await gated.arrived(1);
+    const second = gated.firewall.protect(async () => "second-out", { text: "second" });
+    const aborted = gated.firewall.protect(untilAborted, { text: "aborted", signal: controller.signal });
+    const last = gated.firewall.protect(async () => "last-out", { text: "last" });
+    await settleQueue();
+    controller.abort(new Error("caller went away"));
+    await expect(aborted).rejects.toThrow("caller went away");
+
+    for (let count = 1; count <= 3; count++) {
+      await gated.arrived(count);
+      await settleQueue();
+      expect(gated.calls).toHaveLength(count);
+      gated.calls[count - 1]!.resolve();
+    }
+    await expect(Promise.all([first, second, last])).resolves.toEqual(["first-out", "second-out", "last-out"]);
+    expect(gated.calls.map((call) => call.text)).toEqual(["first", "second", "last"]);
+  });
+
   it("never read caller-owned request data after the caller continues", async () => {
     const gated = gatedFirewall();
     const metadata = { conversationId: "conversation-1", trace: { step: "first" } };
@@ -198,6 +264,25 @@ describe("queued classifications", () => {
     expect(gated.calls[0]!.options?.signal).toBeUndefined();
     gated.calls[0]!.resolve();
     await gated.firewall.flush();
+  });
+
+  it("cap background classifications from concurrent callers across conversations", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const gated = gatedFirewall({ mode: "shadow", maxConcurrent: 2, maxQueued: 2 });
+
+    const results = await Promise.all(Array.from({ length: 7 }, (_unused, index) => gated.firewall.protect(
+      async () => index,
+      { text: `prompt-${index}`, ...(index % 2 === 0 ? {} : { metadata: { conversationId: `conversation-${index}` } }) },
+    )));
+    expect(results).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(warn).toHaveBeenCalledTimes(3);
+
+    for (let count = 1; count <= 4; count++) {
+      await gated.arrived(count);
+      gated.calls[count - 1]!.resolve();
+    }
+    await gated.firewall.flush();
+    expect(gated.calls.map((call) => call.text)).toEqual(["prompt-0", "prompt-1", "prompt-2", "prompt-3"]);
   });
 
   it("cap background classifications across all conversations", async () => {

@@ -107,6 +107,25 @@ describe.each<[string, Create]>([
     await occupying;
   });
 
+  it("runs one check at a time across concurrent calls at an in-flight limit of one", async () => {
+    const gated = gatedFirewall({ maxConcurrent: 1 });
+    const middleware = create(gated.firewall, { parallel: true, scanOutput: false });
+    const doGenerate = vi.fn(async () => ({ content: [{ type: "text", text: "answer" }] }));
+
+    const generations = [1, 2, 3].map(() => middleware.wrapGenerate({
+      params: { prompt: PROMPT }, doGenerate,
+    } as never));
+    for (let count = 1; count <= 3; count++) {
+      await gated.arrived(count);
+      await settleQueue();
+      expect(gated.calls).toHaveLength(count);
+      gated.calls[count - 1]!.resolve();
+    }
+
+    await Promise.all(generations);
+    expect(doGenerate).toHaveBeenCalledTimes(3);
+  });
+
   it("withholds the generation of a blocked input", async () => {
     const held = heldFirewall(["MALICIOUS"]);
     held.release();
