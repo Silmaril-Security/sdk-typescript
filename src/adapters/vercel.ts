@@ -179,7 +179,7 @@ export function createMiddleware(
       return;
     }
     const { toolName, toolCallId } = context;
-    const result: BlockResult = await firewall.classify(
+    const classify = (): Promise<BlockResult> => firewall.classify(
       text,
       {
         hook,
@@ -187,6 +187,7 @@ export function createMiddleware(
         ...(requestedMode !== undefined ? { mode: requestedMode } : {}),
       },
     );
+    const result = await (parallel ? firewall.pending.submit(classify) : classify());
     const threshold = result.threshold;
     const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
     const effectiveMode = requestedMode ?? result.mode ?? "block";

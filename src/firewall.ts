@@ -21,6 +21,7 @@ import {
   DEFAULT_MAX_QUEUED,
   PendingVerdicts,
   conversationId,
+  reportBackground,
   retryBudget,
   validateLimit,
 } from "./pending.js";
@@ -199,6 +200,20 @@ function blockResultFromResponse(
     result.governance = governanceDecisionFromResponse(data.governance);
   }
   return Object.freeze(result);
+}
+
+function wireCopy<T>(value: T): T {
+  const encoded = JSON.stringify(value);
+  return encoded === undefined ? value : JSON.parse(encoded) as T;
+}
+
+/** Copy caller-owned request data so a queued classification never reads it after the caller continues. */
+function snapshotRequest(options: ClassifyOptions): ClassifyOptions {
+  return {
+    ...options,
+    ...(options.metadata === undefined ? {} : { metadata: wireCopy(options.metadata) }),
+    ...(options.governance === undefined ? {} : { governance: wireCopy(options.governance) }),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -562,15 +577,16 @@ export class Firewall {
     operation: (signal: AbortSignal) => PromiseLike<TResult> | TResult,
     options: ProtectOptions<TResult>,
   ): Promise<TResult> {
-    const { text, output, ...input } = options;
+    const { text, output, ...request } = options;
     const requestedMode = validateMode(options.mode) ?? this.mode;
-    const conversation = conversationId(options.metadata);
+    const input = snapshotRequest(request);
+    const conversation = conversationId(input.metadata);
     const outputOptions: ClassifyOptions = {
       hook: HookLabel.LLM_OUTPUT,
-      ...(options.mode === undefined ? {} : { mode: options.mode }),
-      ...(options.review === undefined ? {} : { review: options.review }),
-      ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(input.mode === undefined ? {} : { mode: input.mode }),
+      ...(input.review === undefined ? {} : { review: input.review }),
+      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     };
     const controller = new AbortController();
     if (requestedMode === "shadow" || requestedMode === "warn") {
@@ -581,7 +597,7 @@ export class Firewall {
       }
       return result;
     }
-    const verdict = this.pending.submit(() => this.enforce(text, input), conversation);
+    const verdict = this.pending.submit(() => this.enforce(text, input), conversation, input.signal);
     const [, result] = await Promise.all([
       verdict.catch((error: unknown) => {
         controller.abort(error);
@@ -590,7 +606,12 @@ export class Firewall {
       Promise.resolve().then(() => operation(controller.signal)),
     ]);
     if (output !== undefined) {
-      await this.enforce(output(result), outputOptions);
+      const generated = output(result);
+      await this.pending.submit(
+        () => this.enforce(generated, outputOptions),
+        conversation,
+        input.signal,
+      );
     }
     return result;
   }
@@ -600,9 +621,20 @@ export class Firewall {
     return this.pending.drain();
   }
 
-  /** @internal Classify in the background with one retry; resolves undefined on failure. */
+  /**
+   * @internal Classify in the background with one retry; resolves undefined on failure.
+   * The request is copied now and detached from the caller's signal.
+   */
   observe(text: string, options: ClassifyOptions = {}): Promise<BlockResult | undefined> {
-    return this.pending.observe(() => this.classify(text, options), conversationId(options.metadata));
+    let request: ClassifyOptions;
+    try {
+      request = snapshotRequest(options);
+    } catch (error) {
+      reportBackground("background classification failed", error);
+      return Promise.resolve(undefined);
+    }
+    delete request.signal;
+    return this.pending.observe(() => this.classify(text, request), conversationId(request.metadata));
   }
 
   private async enforce(text: string, options: ClassifyOptions): Promise<BlockResult> {

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { FirewallBlockedException, HookLabel } from "../src/index.js";
 import { createLangChainHandler, protectLangChainRunnable } from "../src/adapters/langchain.js";
-import { heldFirewall } from "./held.js";
+import { gatedFirewall, heldFirewall, settleQueue } from "./held.js";
 
 interface Handler {
   handleChainStart: (chain: unknown, inputs: unknown, runId: string, parentRunId?: string, tags?: string[], metadata?: Record<string, unknown>) => Promise<unknown>;
@@ -111,6 +111,42 @@ describe("LangChain adapter with parallel", () => {
       HookLabel.TOOL_CALL, HookLabel.TOOL_RESPONSE, HookLabel.USER_INPUT,
     ]);
     expect(held.calls.every((call) => call.conversationId === "conversation-1")).toBe(true);
+  });
+
+  it("makes every concurrent tool wait for the same input verdict", async () => {
+    const gated = gatedFirewall();
+    const handler = (await createLangChainHandler(gated.firewall, { parallel: true })) as unknown as Handler;
+
+    await handler.handleChainStart({}, {}, "graph");
+    await handler.handleChatModelStart({}, USER, "model", "graph");
+    await gated.arrived(1);
+    const first = handler.handleToolStart({ name: "send_email" }, "body", "tool-1", "graph");
+    const second = handler.handleToolStart({ name: "delete_records" }, "all", "tool-2", "graph");
+    first.catch(() => undefined);
+    second.catch(() => undefined);
+    await settleQueue();
+    expect(gated.calls.map((call) => call.text)).toEqual(["question"]);
+
+    gated.calls[0]!.resolve("MALICIOUS");
+    await expect(first).rejects.toMatchObject({ hook: HookLabel.USER_INPUT });
+    await expect(second).rejects.toMatchObject({ hook: HookLabel.USER_INPUT });
+    expect(gated.calls).toHaveLength(1);
+  });
+
+  it("keeps raising a landed block until the run ends", async () => {
+    const held = heldFirewall(["MALICIOUS"]);
+    held.release();
+    const handler = await handlerFor(held, { parallel: true });
+
+    await handler.handleChainStart({}, {}, "graph");
+    await handler.handleChatModelStart({}, USER, "model", "graph");
+    await held.firewall.flush();
+
+    await expect(handler.handleLLMNewToken("partial", 0, "model")).rejects.toBeInstanceOf(FirewallBlockedException);
+    await expect(handler.handleToolStart({ name: "send_email" }, "body", "tool", "graph")).rejects.toMatchObject({
+      hook: HookLabel.USER_INPUT,
+    });
+    expect(held.calls).toHaveLength(1);
   });
 
   it("leaves nothing to join after a failed run", async () => {

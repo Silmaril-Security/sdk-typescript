@@ -19,8 +19,16 @@
 - Classify in the background in Shadow mode for the LangChain handler and Deep
   Agents middleware unless `failOpen` is `false`.
 - Send classifications that share `metadata.conversationId` in the order they
-  were started. Add `maxConcurrent` and `maxQueued` client options and
-  `flush()`.
+  were started, including the `protect()` output check. Add `maxConcurrent`
+  and `maxQueued` client options and `flush()`. Background classifications
+  are also capped at `maxConcurrent * maxQueued` across all conversations.
+- Copy `metadata` and `governance` when a queued classification starts, and
+  stop a queued classification waiting once its caller's `signal` aborts.
+- With `parallel`, concurrent LangChain tool starts wait for the same pending
+  checks, a landed block is raised at every later boundary of the run, and
+  the Vercel and Deep Agents adapters send their checks through the client's
+  in-flight limit. Shadow-mode Deep Agents caches a remote notification once
+  its background classification completes.
 
 ## 0.9.1
 

@@ -26,36 +26,64 @@ export function validateLimit(name: string, value: number): number {
   return value;
 }
 
+/** Report a background classification that failed or was not started. */
+export function reportBackground(message: string, error?: unknown): void {
+  // eslint-disable-next-line no-console
+  console.warn(`silmaril.firewall: ${message}`, ...(error === undefined ? [] : [error]));
+}
+
+function settled(gate: Promise<unknown>, signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) {
+    return gate.then(() => undefined);
+  }
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void gate.then(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    });
+  });
+}
+
 /** Sends classifications for one conversation in the order they were started. */
 export class PendingVerdicts {
-  private readonly tails = new Map<string, Promise<unknown>>();
+  private readonly gates = new Map<string, Promise<unknown>>();
   private readonly depths = new Map<string, number>();
   private readonly outstanding = new Set<Promise<unknown>>();
   private readonly waiting: Array<() => void> = [];
   private running = 0;
+  private background = 0;
 
   constructor(
     private readonly maxConcurrent: number,
     private readonly maxQueued: number,
   ) {}
 
-  /** Start a classification the caller joins by awaiting the returned promise. */
-  submit<T>(call: () => Promise<T>, conversation?: string): Promise<T> {
-    const pending = this.start(call, conversation);
+  /**
+   * Start a classification the caller joins by awaiting the returned promise.
+   * An aborted signal stops it waiting for its turn; later classifications keep their order.
+   */
+  submit<T>(call: () => Promise<T>, conversation?: string, signal?: AbortSignal): Promise<T> {
+    const pending = this.start(call, conversation, signal);
     pending.catch(() => undefined);
     return pending;
   }
 
   /** Start a classification nobody joins; failures are reported, never thrown. */
   observe<T>(call: () => Promise<T>, conversation?: string): Promise<T | undefined> {
-    if (conversation !== undefined && (this.depths.get(conversation) ?? 0) >= this.maxQueued) {
-      // eslint-disable-next-line no-console
-      console.warn("silmaril.firewall: dropped background classification: conversation queue is full");
+    const conversationFull = conversation !== undefined
+      && (this.depths.get(conversation) ?? 0) >= this.maxQueued;
+    if (conversationFull || this.background >= this.maxConcurrent * this.maxQueued) {
+      reportBackground("dropped background classification: queue is full");
       return Promise.resolve(undefined);
     }
-    return this.start(() => retryLimit.run(BACKGROUND_RETRIES, call), conversation).catch((error: unknown) => {
-      // eslint-disable-next-line no-console
-      console.warn("silmaril.firewall: background classification failed", error);
+    this.background++;
+    const pending = this.start(() => retryLimit.run(BACKGROUND_RETRIES, call), conversation, undefined);
+    const release = (): void => { this.background--; };
+    pending.then(release, release);
+    return pending.catch((error: unknown) => {
+      reportBackground("background classification failed", error);
       return undefined;
     });
   }
@@ -67,13 +95,24 @@ export class PendingVerdicts {
     }
   }
 
-  private start<T>(call: () => Promise<T>, conversation: string | undefined): Promise<T> {
-    const previous = conversation === undefined ? undefined : this.tails.get(conversation);
-    const pending = this.run(call, previous);
+  private start<T>(
+    call: () => Promise<T>,
+    conversation: string | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<T> {
+    const previous = conversation === undefined ? undefined : this.gates.get(conversation);
+    const pending = this.run(call, previous, signal);
     this.outstanding.add(pending);
     if (conversation !== undefined) {
-      this.tails.set(conversation, pending);
+      // A cancelled classification settles early, so its successors wait for its predecessor too.
+      const gate = Promise.allSettled([previous, pending]);
+      this.gates.set(conversation, gate);
       this.depths.set(conversation, (this.depths.get(conversation) ?? 0) + 1);
+      void gate.then(() => {
+        if (this.gates.get(conversation) === gate) {
+          this.gates.delete(conversation);
+        }
+      });
     }
     const finish = (): void => {
       this.outstanding.delete(pending);
@@ -86,23 +125,21 @@ export class PendingVerdicts {
       } else {
         this.depths.delete(conversation);
       }
-      if (this.tails.get(conversation) === pending) {
-        this.tails.delete(conversation);
-      }
     };
     pending.then(finish, finish);
     return pending;
   }
 
-  private async run<T>(call: () => Promise<T>, previous: Promise<unknown> | undefined): Promise<T> {
+  private async run<T>(
+    call: () => Promise<T>,
+    previous: Promise<unknown> | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<T> {
+    signal?.throwIfAborted();
     if (previous !== undefined) {
-      await previous.catch(() => undefined);
+      await settled(previous, signal);
     }
-    if (this.running >= this.maxConcurrent) {
-      await new Promise<void>((resolve) => this.waiting.push(resolve));
-    } else {
-      this.running++;
-    }
+    await this.acquire(signal);
     try {
       return await call();
     } finally {
@@ -113,6 +150,28 @@ export class PendingVerdicts {
         this.running--;
       }
     }
+  }
+
+  private acquire(signal: AbortSignal | undefined): Promise<void> {
+    if (this.running < this.maxConcurrent) {
+      this.running++;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = (): void => {
+        const position = this.waiting.indexOf(grant);
+        if (position >= 0) {
+          this.waiting.splice(position, 1);
+          reject(signal?.reason);
+        }
+      };
+      const grant = (): void => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      this.waiting.push(grant);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 }
 
@@ -134,38 +193,63 @@ export async function alongside<T>(
 
 interface DeferredVerdict {
   readonly promise: Promise<unknown>;
+  passed: boolean;
   failed: boolean;
   failure: unknown;
 }
 
-/** Pending verdicts grouped by the execution that must join them. */
+/**
+ * Pending verdicts grouped by the execution that must join them. A scope keeps
+ * its verdicts until it is dropped, so concurrent joiners wait for the same
+ * checks and a failure reaches every later boundary of that execution.
+ */
 export class Deferred {
   private readonly scopes = new Map<string, DeferredVerdict[]>();
 
   add(scope: string, promise: Promise<unknown>): void {
-    const verdict: DeferredVerdict = { promise, failed: false, failure: undefined };
-    promise.catch((error: unknown) => {
-      verdict.failed = true;
-      verdict.failure = error;
-    });
+    const verdict: DeferredVerdict = { promise, passed: false, failed: false, failure: undefined };
+    promise.then(
+      () => { verdict.passed = true; },
+      (error: unknown) => {
+        verdict.failed = true;
+        verdict.failure = error;
+      },
+    );
     const verdicts = this.scopes.get(scope) ?? [];
     verdicts.push(verdict);
     this.scopes.set(scope, verdicts);
   }
 
-  /** Remove and return every verdict the scope still has to join. */
-  take(scope: string): Promise<unknown>[] {
-    const verdicts = this.scopes.get(scope) ?? [];
-    this.scopes.delete(scope);
-    return verdicts.map((verdict) => verdict.promise);
+  /** Wait for every verdict in the scope and throw the first failure. */
+  async join(scope: string): Promise<void> {
+    for (const verdict of [...this.scopes.get(scope) ?? []]) {
+      await verdict.promise.catch(() => undefined);
+      if (verdict.failed) {
+        throw verdict.failure;
+      }
+    }
+    const unfinished = (this.scopes.get(scope) ?? []).filter((verdict) => !verdict.passed);
+    if (unfinished.length > 0) {
+      this.scopes.set(scope, unfinished);
+    } else {
+      this.scopes.delete(scope);
+    }
   }
 
   /** Throw the failure of a verdict that has already landed, without waiting for the rest. */
   check(scope: string): void {
     const landed = this.scopes.get(scope)?.find((verdict) => verdict.failed);
     if (landed !== undefined) {
-      this.scopes.delete(scope);
       throw landed.failure;
     }
+  }
+
+  /** Forget a scope once its execution has ended. */
+  drop(scope: string): void {
+    this.scopes.delete(scope);
+  }
+
+  clear(): void {
+    this.scopes.clear();
   }
 }

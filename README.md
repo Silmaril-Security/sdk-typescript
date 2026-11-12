@@ -298,7 +298,7 @@ interface FirewallOptions {
   review?: "standard" | "deep";                       // explicit client review default
   shadowMode?: boolean;                               // deprecated legacy mapping
   maxConcurrent?: number;                             // default: 32 classifications in flight beside the host flow
-  maxQueued?: number;                                 // default: 64 unjoined background checks per conversation
+  maxQueued?: number;                                 // default: 64 unjoined background checks per conversation; maxConcurrent * maxQueued in total
 }
 ```
 
@@ -578,12 +578,24 @@ Use `protect()` only for calls whose effect can be discarded. Classify the
 arguments of a tool that writes with `classify()` before running it.
 
 Classifications that share `metadata.conversationId` are sent in the order
-they were started, so parallel checks keep the backend sequence intact.
-`maxConcurrent` bounds how many run at once. A background classification
-retries once, never rejects, and logs its failure with `console.warn`; one
-that would exceed `maxQueued` unjoined checks for its conversation is dropped
-with a warning. `await fw.flush()` waits for background classifications to
-finish, for example before a serverless handler returns.
+they were started, so parallel checks keep the backend sequence intact. The
+output check waits in that same order. `maxConcurrent` bounds how many run at
+once, including output checks and every check an adapter makes with
+`parallel: true`. The `metadata` and `governance` you pass are
+copied when the call starts, so changing them afterwards does not change a
+classification that is still waiting.
+
+Aborting the `signal` you pass stops a classification that is still waiting
+for its turn, rejects `protect()` with the signal's reason, and aborts your
+operation's signal. Classifications queued after it keep their order.
+
+A background classification retries once, never rejects, logs its failure with
+`console.warn`, and does not follow the caller's `signal`. One that would
+exceed `maxQueued` unjoined checks for its conversation, or
+`maxConcurrent * maxQueued` background checks across all conversations
+(2,048 by default), is dropped with a warning. `await fw.flush()` waits for
+background classifications to finish, for example before a serverless handler
+returns.
 
 ## Migration Notes
 
@@ -760,10 +772,11 @@ runs after tokens are emitted: a block stops the run and cannot recall them.
 Pass `parallel: true` to the handler or to `protectLangChainRunnable()` to run
 the `user_input` and `tool_response` checks beside the model call. They are
 joined when the model call ends, before a tool starts, and when the run ends;
-the `tool_call` and `llm_output` checks always wait for their verdict. A block
-that has already arrived is thrown at the next callback, including the next
-streamed token. Callbacks cannot cancel a model call, so a late block discards
-its output. In Shadow mode every check runs in the background and nothing is
+the `tool_call` and `llm_output` checks always wait for their verdict. Tools
+that start concurrently all wait for the same pending checks. A block that has
+already arrived is thrown at the next callback, including the next streamed
+token, and at every later boundary until the run ends. Callbacks cannot cancel
+a model call, so a late block discards its output. In Shadow mode every check runs in the background and nothing is
 joined, unless `failOpen: false` requires each classification to succeed. The LangChain run ID is sent as
 `metadata.langgraph.run_id`; every classification gets a distinct
 `metadata.silmaril.request_id`. The current native thread ID is sent as

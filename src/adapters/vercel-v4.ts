@@ -281,12 +281,13 @@ export function createMiddlewareV4(
     signal?: AbortSignal,
   ): Promise<void> => {
     if (!text.trim()) return;
-    const result: BlockResult = await firewall.classify(text, {
+    const classify = (): Promise<BlockResult> => firewall.classify(text, {
       hook,
       ...(context.toolName === undefined ? {} : { toolName: context.toolName }),
       ...(requestedMode === undefined ? {} : { mode: requestedMode }),
       ...(signal === undefined ? {} : { signal }),
     });
+    const result = await (parallel ? firewall.pending.submit(classify, undefined, signal) : classify());
     const blocked =
       result.prediction === "MALICIOUS" || result.governance?.action === "block";
     const effectiveMode = requestedMode ?? result.mode ?? "block";

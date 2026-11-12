@@ -106,7 +106,16 @@ async function buildLangChainHandler(
   const { ensureConfig } = await import("@langchain/core/runnables");
   const threads = new RunThreadIdentity(boundIdentity, () => ensureConfig());
   const { BaseTracer } = await import("@langchain/core/tracers/base");
-  let finishRun = (runId: string): void => { threads.finish(runId); };
+  const deferred = new Deferred();
+  const dropScope = (runId: string): void => {
+    if (threads.root(runId) === runId) {
+      deferred.drop(runId);
+    }
+  };
+  let finishRun = (runId: string): void => {
+    dropScope(runId);
+    threads.finish(runId);
+  };
 
   const enabledHooks = resolveHooks(options.hooks);
   // includeSystem remains inert for the user-only chat-model scan.
@@ -139,7 +148,6 @@ async function buildLangChainHandler(
 
   const parallel = options.parallel ?? false;
   const background = requestedMode === "shadow" && failOpen;
-  const deferred = new Deferred();
 
   const report = (
     result: BlockResult,
@@ -197,21 +205,11 @@ async function buildLangChainHandler(
     report(result, text, hookLabel, runId, toolName);
   };
 
-  const settle = async (runId: string): Promise<void> => {
-    for (const pending of deferred.take(threads.root(runId))) {
-      await pending;
-    }
-  };
+  const settle = (runId: string): Promise<void> => deferred.join(threads.root(runId));
 
   const settleRoot = async (runId: string): Promise<void> => {
     if (threads.root(runId) === runId) {
       await settle(runId);
-    }
-  };
-
-  const dropRoot = (runId: string): void => {
-    if (threads.root(runId) === runId) {
-      deferred.take(runId);
     }
   };
 
@@ -303,6 +301,7 @@ async function buildLangChainHandler(
 
     capture(runId: string, parentRunId?: string, metadata?: unknown): void {
       for (const id of threads.start(runId, parentRunId, metadata)) {
+        deferred.drop(id);
         this.runMap.delete(id);
         this.runTreeMap?.delete(id);
       }
@@ -310,6 +309,7 @@ async function buildLangChainHandler(
 
     finishAll(): void {
       for (const id of [...this.runMap.keys()]) this.finishRun(id);
+      deferred.clear();
       this.runTreeMap?.clear();
     }
 
@@ -466,31 +466,30 @@ async function buildLangChainHandler(
 
     override async handleChainError(...args: Parameters<BaseTracerType["handleChainError"]>): Promise<Run> {
       if (!this.getRunById(args[1])) this._createRunForChainStart(serialized(undefined, "chain"), {}, args[1]);
-      dropRoot(args[1]);
       try { return await super.handleChainError(...args); } finally { finishRun(args[1]); }
     }
 
     override async handleLLMError(...args: Parameters<BaseTracerType["handleLLMError"]>): Promise<Run> {
       if (!this.getRunById(args[1])) this._createRunForLLMStart(serialized(undefined, "llm"), [], args[1]);
-      dropRoot(args[1]);
       try { return await super.handleLLMError(...args); } finally { finishRun(args[1]); }
     }
 
     override async handleToolError(...args: Parameters<BaseTracerType["handleToolError"]>): Promise<Run> {
       if (!this.getRunById(args[1])) this._createRunForToolStart(serialized(undefined, "tool"), "", args[1]);
-      dropRoot(args[1]);
       try { return await super.handleToolError(...args); } finally { finishRun(args[1]); }
     }
 
     override async handleRetrieverError(...args: Parameters<BaseTracerType["handleRetrieverError"]>): Promise<Run> {
       if (!this.getRunById(args[1])) this._createRunForRetrieverStart(serialized(undefined, "retriever"), "", args[1]);
-      dropRoot(args[1]);
       try { return await super.handleRetrieverError(...args); } finally { finishRun(args[1]); }
     }
   }
 
   const handler = new SilmarilFirewallHandler();
-  finishRun = (runId: string): void => { handler.finishRun(runId); };
+  finishRun = (runId: string): void => {
+    dropScope(runId);
+    handler.finishRun(runId);
+  };
   handlerCleanups.set(handler, () => handler.finishAll());
   return handler;
 }

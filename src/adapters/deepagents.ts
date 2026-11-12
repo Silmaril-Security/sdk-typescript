@@ -307,6 +307,8 @@ interface Decision {
   enforce: boolean;
   mode: FirewallMode | undefined;
   cacheable?: boolean;
+  /** Resolves true once a background classification has completed. */
+  observed?: Promise<boolean>;
 }
 
 export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgentsMiddlewareOptions = {}) {
@@ -333,8 +335,9 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
     return { enforce: blocked && mode === "block", mode, cacheable: true };
   };
 
-  const classify = async (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): Promise<Decision> => {
-    if (!text.trim()) return { enforce: false, mode: effectiveMode };
+  // The request is built when the check is prepared, so a queued check never reads live agent state.
+  const prepare = (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): (() => Promise<Decision>) => {
+    if (!text.trim()) return async () => ({ enforce: false, mode: effectiveMode });
     const request: ClassifyOptions = {
       hook,
       ...(toolName === undefined ? {} : { toolName }),
@@ -342,18 +345,33 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
       metadata: { ...(conversationId === undefined ? {} : { conversationId }), ...remoteLineage(ensureConfig()) },
     };
     if (background) {
-      void firewall.observe(text, request).then((result) => {
+      const observed = firewall.observe(text, request).then((result) => {
         if (result !== undefined) decide(result, text, hook, toolName);
+        return result !== undefined;
       });
-      return { enforce: false, mode: effectiveMode };
+      return async () => ({ enforce: false, mode: effectiveMode, observed });
     }
-    try {
-      return decide(await firewall.classify(text, request), text, hook, toolName);
-    } catch (error) {
-      if (isReviewCompatibilityError(error)) throw error;
-      if (options.failOpen === false) throw error;
-      return { enforce: false, mode: effectiveMode };
-    }
+    return async () => {
+      try {
+        return decide(await firewall.classify(text, request), text, hook, toolName);
+      } catch (error) {
+        if (isReviewCompatibilityError(error)) throw error;
+        if (options.failOpen === false) throw error;
+        return { enforce: false, mode: effectiveMode };
+      }
+    };
+  };
+
+  const classify = (text: string, hook: HookLabel, conversationId: string | undefined, toolName?: string): Promise<Decision> => {
+    const check = prepare(text, hook, conversationId, toolName);
+    return parallel && !background
+      ? firewall.pending.submit(check, conversationOf({ conversationId }))
+      : check();
+  };
+
+  const rememberNotification = (key: string, blocked: boolean): void => {
+    notificationChecks.set(key, blocked);
+    while (notificationChecks.size > 1024) notificationChecks.delete(notificationChecks.keys().next().value!);
   };
 
   return createMiddleware({
@@ -372,9 +390,11 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
           } else {
             const decision = await classify(textOf(message), HookLabel.TOOL_RESPONSE, conversationId, "async_subagent");
             blocked = decision.enforce;
-            if (key !== undefined && decision.cacheable) {
-              notificationChecks.set(key, blocked);
-              while (notificationChecks.size > 1024) notificationChecks.delete(notificationChecks.keys().next().value!);
+            if (key !== undefined && decision.cacheable) rememberNotification(key, blocked);
+            if (key !== undefined) {
+              void decision.observed?.then((completed) => {
+                if (completed) rememberNotification(key, false);
+              });
             }
           }
         }
@@ -401,10 +421,9 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
       const protectedRequest = request;
       const running = racesModel ? Promise.resolve().then(() => handler(protectedRequest)) : undefined;
       running?.catch(() => undefined);
-      const checkInput = (): Promise<Decision> => classify(textOf(latestUser!), HookLabel.USER_INPUT, conversationId);
       const inputDecision = latestUser === undefined
         ? undefined
-        : await (racesModel ? firewall.pending.submit(checkInput, conversationOf({ conversationId })) : checkInput());
+        : await classify(textOf(latestUser), HookLabel.USER_INPUT, conversationId);
       if (inputDecision?.enforce) return new AIMessage(SAFE_OUTPUT_MESSAGE);
       const capMode = effectiveMode ?? inputDecision?.mode ?? "block";
       // Only genuine prior Block markers count, and the terminal cap requires current effective Block mode.

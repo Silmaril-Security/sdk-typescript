@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Firewall, FirewallBlockedException, HookLabel } from "../src/index.js";
-import { heldFirewall } from "./held.js";
+import { gatedFirewall, heldFirewall, settleQueue } from "./held.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -133,6 +133,146 @@ describe("background classifications", () => {
     held.release();
     await held.firewall.flush();
     expect(held.calls.map((call) => call.text)).toEqual(["first", "second"]);
+  });
+});
+
+describe("queued classifications", () => {
+  it("send the output check through the queue, within the in-flight limit", async () => {
+    const gated = gatedFirewall({ maxConcurrent: 1 });
+
+    const answer = gated.firewall.protect(async () => "generated", {
+      text: "prompt",
+      output: (result) => result,
+    });
+    await gated.arrived(1);
+    const other = gated.firewall.pending.submit(() => gated.firewall.classify("other"));
+    gated.calls[0]!.resolve();
+    await gated.arrived(2);
+    await settleQueue();
+    expect(gated.calls.map((call) => call.text)).toEqual(["prompt", "other"]);
+
+    gated.calls[1]!.resolve();
+    await gated.arrived(3);
+    expect(gated.calls[2]).toMatchObject({ text: "generated", options: { hook: HookLabel.LLM_OUTPUT } });
+    gated.calls[2]!.resolve();
+    await expect(answer).resolves.toBe("generated");
+    await other;
+  });
+
+  it("never read caller-owned request data after the caller continues", async () => {
+    const gated = gatedFirewall();
+    const metadata = { conversationId: "conversation-1", trace: { step: "first" } };
+    const governance = { agent: "assistant", resource: { kind: "tool" as const, id: "search" } };
+
+    const answer = gated.firewall.protect(async () => {
+      metadata.conversationId = "conversation-2";
+      metadata.trace.step = "changed";
+      governance.resource.id = "delete_records";
+      return "generated";
+    }, { text: "prompt", metadata, governance, output: (result) => result });
+    await gated.arrived(1);
+    gated.calls[0]!.resolve();
+    await gated.arrived(2);
+    gated.calls[1]!.resolve();
+    await answer;
+
+    const sent = { conversationId: "conversation-1", trace: { step: "first" } };
+    expect(gated.calls[0]!.options).toMatchObject({
+      metadata: sent,
+      governance: { agent: "assistant", resource: { kind: "tool", id: "search" } },
+    });
+    expect(gated.calls[1]!.options?.metadata).toEqual(sent);
+  });
+
+  it("copy background request data and detach it from the caller's signal", async () => {
+    const gated = gatedFirewall({ mode: "shadow" });
+    const metadata = { conversationId: "conversation-1", trace: { step: "first" } };
+    const controller = new AbortController();
+
+    await gated.firewall.protect(async () => "answer", { text: "prompt", metadata, signal: controller.signal });
+    metadata.trace.step = "changed";
+    controller.abort();
+    await gated.arrived(1);
+
+    expect(gated.calls[0]!.options?.metadata).toEqual({ conversationId: "conversation-1", trace: { step: "first" } });
+    expect(gated.calls[0]!.options?.signal).toBeUndefined();
+    gated.calls[0]!.resolve();
+    await gated.firewall.flush();
+  });
+
+  it("cap background classifications across all conversations", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const gated = gatedFirewall({ mode: "shadow", maxConcurrent: 1, maxQueued: 2 });
+
+    void gated.firewall.observe("first");
+    void gated.firewall.observe("second", { metadata: { conversationId: "conversation-1" } });
+    await expect(gated.firewall.observe("dropped")).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledOnce();
+
+    await gated.arrived(1);
+    gated.calls[0]!.resolve();
+    await gated.arrived(2);
+    gated.calls[1]!.resolve();
+    await gated.firewall.flush();
+    expect(gated.calls.map((call) => call.text)).toEqual(["first", "second"]);
+  });
+
+  it("stop waiting for a slot when the caller aborts", async () => {
+    const gated = gatedFirewall({ maxConcurrent: 1 });
+    const occupying = gated.firewall.pending.submit(() => gated.firewall.classify("occupying"));
+    await gated.arrived(1);
+    const controller = new AbortController();
+    let operationAborted = false;
+
+    const answer = gated.firewall.protect((signal) => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        operationAborted = true;
+        reject(signal.reason);
+      });
+    }), { text: "prompt", signal: controller.signal });
+    await settleQueue();
+    controller.abort(new Error("caller went away"));
+
+    await expect(answer).rejects.toThrow("caller went away");
+    expect(operationAborted).toBe(true);
+    expect(gated.calls.map((call) => call.text)).toEqual(["occupying"]);
+    gated.calls[0]!.resolve();
+    await occupying;
+  });
+
+  it("keep conversation order after a queued classification is cancelled", async () => {
+    const gated = gatedFirewall();
+    const conversation = "conversation-1";
+    const first = gated.firewall.pending.submit(() => gated.firewall.classify("first"), conversation);
+    await gated.arrived(1);
+    const controller = new AbortController();
+    const cancelled = gated.firewall.pending.submit(
+      () => gated.firewall.classify("cancelled"), conversation, controller.signal,
+    );
+    const last = gated.firewall.pending.submit(() => gated.firewall.classify("last"), conversation);
+
+    controller.abort(new Error("caller went away"));
+    await expect(cancelled).rejects.toThrow("caller went away");
+    await settleQueue();
+    expect(gated.calls.map((call) => call.text)).toEqual(["first"]);
+
+    gated.calls[0]!.resolve();
+    await gated.arrived(2);
+    expect(gated.calls.map((call) => call.text)).toEqual(["first", "last"]);
+    gated.calls[1]!.resolve();
+    await Promise.all([first, last]);
+  });
+
+  it("report a background request that cannot be copied instead of throwing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const gated = gatedFirewall({ mode: "shadow" });
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    await expect(gated.firewall.observe("background", { metadata: cyclic })).resolves.toBeUndefined();
+
+    expect(gated.calls).toHaveLength(0);
+    expect(warn).toHaveBeenCalledOnce();
   });
 });
 

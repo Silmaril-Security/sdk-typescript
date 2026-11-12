@@ -10,7 +10,7 @@ import {
 } from "../src/index.js";
 import { createMiddleware } from "../src/adapters/vercel.js";
 import { createMiddlewareV4 } from "../src/adapters/vercel-v4.js";
-import { heldFirewall } from "./held.js";
+import { gatedFirewall, heldFirewall, settleQueue } from "./held.js";
 
 const PROMPT = [{ role: "user", content: [{ type: "text", text: "question" }] }];
 
@@ -85,6 +85,26 @@ describe.each<[string, Create]>([
 
     expect(result).toMatchObject({ content: [{ type: "text", text: "answer" }] });
     expect(held.calls.map((call) => call.hook)).toEqual([HookLabel.USER_INPUT]);
+  });
+
+  it("keeps its checks within the client's in-flight limit", async () => {
+    const gated = gatedFirewall({ maxConcurrent: 1 });
+    const occupying = gated.firewall.pending.submit(() => gated.firewall.classify("occupying"));
+    await gated.arrived(1);
+    const doGenerate = vi.fn(async () => ({ content: [{ type: "text", text: "answer" }] }));
+
+    const generation = create(gated.firewall, { parallel: true, scanOutput: false }).wrapGenerate({
+      params: { prompt: PROMPT }, doGenerate,
+    } as never);
+    await settleQueue();
+    expect(doGenerate).toHaveBeenCalledOnce();
+    expect(gated.calls.map((call) => call.text)).toEqual(["occupying"]);
+
+    gated.calls[0]!.resolve();
+    await gated.arrived(2);
+    gated.calls[1]!.resolve();
+    await expect(generation).resolves.toMatchObject({ content: [{ type: "text", text: "answer" }] });
+    await occupying;
   });
 
   it("withholds the generation of a blocked input", async () => {
