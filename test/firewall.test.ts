@@ -212,6 +212,49 @@ describe("Firewall constructor", () => {
   });
 });
 
+describe("Firewall verdict numbers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    { field: "score", fields: '"threshold":0.5', reason: "missing score" },
+    { field: "threshold", fields: '"score":0.1', reason: "missing threshold" },
+    { field: "score", fields: '"score":null,"threshold":0.5', reason: "null score" },
+    { field: "threshold", fields: '"score":0.1,"threshold":null', reason: "null threshold" },
+    { field: "score", fields: '"score":"0.1","threshold":0.5', reason: "string score" },
+    { field: "threshold", fields: '"score":0.1,"threshold":"0.5"', reason: "string threshold" },
+    { field: "score", fields: '"score":1e400,"threshold":0.5', reason: "nonfinite score" },
+    { field: "threshold", fields: '"score":0.1,"threshold":1e400', reason: "nonfinite threshold" },
+    { field: "score", fields: '"score":-0.1,"threshold":0.5', reason: "negative score" },
+    { field: "threshold", fields: '"score":0.1,"threshold":1.1', reason: "threshold above one" },
+  ])("rejects $reason in single and batch responses", async ({ field, fields }) => {
+    const item = `{"prediction":"BENIGN",${fields}}`;
+    const fetchVerdict = vi.fn()
+      .mockResolvedValueOnce(new Response(item))
+      .mockResolvedValueOnce(new Response(`{"predictions":[${item}]}`));
+    vi.stubGlobal("fetch", fetchVerdict);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const error = `response ${field} must be a finite number between 0 and 1`;
+
+    await expect(fw.classify("hello")).rejects.toThrow(error);
+    await expect(fw.classifyBatch(["hello"])).rejects.toThrow(error);
+    expect(fetchVerdict).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves both numerical endpoints", async () => {
+    const item = '{"prediction":"BENIGN","score":0,"threshold":1}';
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(item))
+      .mockResolvedValueOnce(new Response(`{"predictions":[${item}]}`)));
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const result = { prediction: "BENIGN", score: 0, threshold: 1 };
+
+    await expect(fw.classify("hello")).resolves.toEqual(result);
+    await expect(fw.classifyBatch(["hello"])).resolves.toEqual([result]);
+  });
+});
+
 describe("Firewall.classify", () => {
   let originalFetch: typeof fetch;
 
@@ -648,8 +691,8 @@ describe("Firewall.classifyBatch", () => {
         status: 200,
         body: {
           predictions: [
-            { prediction: "BENIGN", score: "0.01" },
-            { prediction: "MALICIOUS", score: "0.9" },
+            { prediction: "BENIGN", score: 0.01 },
+            { prediction: "MALICIOUS", score: 0.9 },
           ],
         },
       },

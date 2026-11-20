@@ -3,7 +3,7 @@
 
 export function validateThreshold(name: string, value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
-    throw new Error(`Firewall: ${name} must be a finite number between 0 and 1, got ${value}`);
+    throw new Error(`Firewall: ${name} must be a finite number between 0 and 1`);
   }
   return value;
 }
