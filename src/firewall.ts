@@ -26,6 +26,7 @@ import {
   validateLimit,
 } from "./pending.js";
 import { sanitizeText } from "./sanitization.js";
+import { validateThreshold } from "./validation.js";
 import type {
   BlockResult,
   ClassifyBatchOptions,
@@ -78,8 +79,8 @@ interface BatchClassifyPayload {
 
 interface SingleClassifyResponse {
   prediction: Prediction;
-  score: number;
-  threshold: number;
+  score?: unknown;
+  threshold?: unknown;
   review?: unknown;
   mode?: unknown;
   primary_outcome?: unknown;
@@ -162,8 +163,8 @@ function blockResultFromResponse(
     governance?: GovernanceDecision;
   } = {
     prediction: data.prediction,
-    score: Number(data.score),
-    threshold: Number(data.threshold),
+    score: validateThreshold("response score", data.score),
+    threshold: validateThreshold("response threshold", data.threshold),
   };
   if (requestedReview !== undefined) {
     result.review = requestedReview;
