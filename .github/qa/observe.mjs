@@ -3,6 +3,19 @@ import { appendFileSync } from 'node:fs';
 function note(...values) {
   appendFileSync(process.env.QA_OBSERVATIONS, values.join(' ') + '\n');
 }
+import { channel } from 'node:diagnostics_channel';
+const sockets = new WeakMap();
+let opened = 0;
+channel('undici:client:connected').subscribe(({ socket }) => {
+  sockets.set(socket, ++opened);
+  note('Connected', opened, socket.remoteFamily, socket.remoteAddress);
+});
+channel('undici:client:sendHeaders').subscribe(({ socket }) => {
+  note('Sent headers on connection', sockets.get(socket) ?? 'unknown');
+});
+channel('undici:client:connectError').subscribe(({ error }) => {
+  note('Connect error', error.code);
+});
 const fetchRequest = globalThis.fetch;
 let calls = 0;
 globalThis.fetch = async (...args) => {
