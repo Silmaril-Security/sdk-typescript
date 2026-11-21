@@ -6,66 +6,105 @@ permissions:
   contents: read
   actions: read
 jobs:
-  observe:
+  customer:
+    name: Customer acceptance (${{ matrix.consumer }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        replica: [1, 2, 3]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+        consumer: [consumer.mjs, consumer_protect.mjs]
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24.x'
       - uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
           run-id: 44935190047
           name: typescript-dist
-          path: /tmp/qualification/package
+          path: dist-package
+      - name: Verify the original SDK candidate
+        run: |
+          echo "2a9a9da8e1d8c33397ed28d508a11382f443b541c7a13926bb887df5109b9e15  $(find dist-package -name '*.tgz')" | sha256sum --check
+      - name: Check shared runner configuration
+        id: configured
+        env:
+          APP_KEY: ${{ secrets.CUSTOMER_TESTS_APP_PRIVATE_KEY }}
+          APP_ID: ${{ vars.CUSTOMER_TESTS_APP_CLIENT_ID }}
+        run: |
+          if [ -n "$APP_KEY" ] && [ -n "$APP_ID" ]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            mkdir -p results
+            echo '{"status":"BLOCKED","errors":["Configure the customer testing GitHub App and Test Tenant A credentials"]}' > results/result.json
+            echo '## Customer qualification: BLOCKED — shared runner access is not configured' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Create scoped repository read token
+        if: steps.configured.outputs.ready == 'true'
         id: reader
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.CUSTOMER_TESTS_APP_CLIENT_ID }}
           private-key: ${{ secrets.CUSTOMER_TESTS_APP_PRIVATE_KEY }}
           owner: Silmaril-Security
-          repositories: SilmarilCustomerTests
+          repositories: SilmarilCustomerTests,firewall-ui,silmaril-firewall-mcp
           permission-contents: read
-      - uses: actions/checkout@v4
+      - name: Checkout pinned shared runner
+        if: steps.configured.outputs.ready == 'true'
+        uses: actions/checkout@v4
         with:
           repository: Silmaril-Security/SilmarilCustomerTests
-          ref: 1a77a9bfcb634c2851fb966261f4413e1542e158
+          ref: 2a32a7ea622400375d43e9bfdf332efceda0a91c
           token: ${{ steps.reader.outputs.token }}
-          persist-credentials: false
           path: _customer
-      - name: Verify original candidate
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          package-manager-cache: false
+      - name: Resolve package artifact
+        if: steps.configured.outputs.ready == 'true'
+        id: package
         run: |
-          cd /tmp/qualification
-          tarball=$(realpath package/*.tgz)
-          echo "2a9a9da8e1d8c33397ed28d508a11382f443b541c7a13926bb887df5109b9e15  $tarball" | sha256sum --check
-          echo "b7c80629834d787f410cacaf12160ed3b9e382d41c15ae7fde1aa06343b85686  $GITHUB_WORKSPACE/.github/qa/acceptance-scenario.json" | sha256sum --check
-
-      - name: Run original consumers with scoped transport diagnostics
+          files=(dist-package/*.tgz)
+          test "${#files[@]}" = 1 && test -f "${files[0]}"
+          echo "path=${files[0]}" >> "$GITHUB_OUTPUT"
+      - name: Customer journey
+        if: steps.configured.outputs.ready == 'true'
+        id: acceptance
+        uses: ./_customer
+        with:
+          sdk: typescript
+          artifact: ${{ steps.package.outputs.path }}
+          consumer: customer/${{ matrix.consumer }}
+          source-sha: 40c9766e48712745e87b558e610fd5c6a9fc82de
+          framework-sha: 2a32a7ea622400375d43e9bfdf332efceda0a91c
         env:
           SILMARIL_API_URL: ${{ vars.CUSTOMER_API_URL }}
           SILMARIL_API_KEY: ${{ secrets.CUSTOMER_API_KEY }}
-        run: |
-          set -eu
-          tarball=$(realpath /tmp/qualification/package/*.tgz)
-          export CUSTOMER_BACKEND_ID=test-tenant-a
-          export NODE_OPTIONS="--import=$GITHUB_WORKSPACE/.github/qa/observe.mjs"
-          export QA_OBSERVATIONS="$RUNNER_TEMP/transport.txt"
-          touch "$QA_OBSERVATIONS"
-          trap 'cat "$QA_OBSERVATIONS"' EXIT
-          for i in 1 2 3; do
-            for consumer in consumer_protect.mjs consumer.mjs; do
-              python _customer/customer_tests/cli.py run --sdk typescript --artifact "$tarball" \
-                --consumer "customer/$consumer" --source-sha 40c9766e48712745e87b558e610fd5c6a9fc82de \
-                --framework-sha 1a77a9bfcb634c2851fb966261f4413e1542e158 \
-                --scenario _customer/scenarios/repository-assistant.json
-            done
-          done
+          CUSTOMER_BACKEND_ID: ${{ vars.CUSTOMER_BACKEND_ID }}
+          CUSTOMER_TESTS_READ_TOKEN: ${{ steps.reader.outputs.token }}
+          CUSTOMER_UI_URL: ${{ vars.CUSTOMER_UI_URL }}
+          CUSTOMER_LOGIN_EMAIL: ${{ secrets.CUSTOMER_LOGIN_EMAIL }}
+          CUSTOMER_LOGIN_PASSWORD: ${{ secrets.CUSTOMER_LOGIN_PASSWORD }}
+          CUSTOMER_ORGANIZATION_ID: ${{ vars.CUSTOMER_ORGANIZATION_ID }}
+          CUSTOMER_UI_STORAGE_STATE_JSON: ${{ secrets.CUSTOMER_UI_STORAGE_STATE_JSON }}
+          CUSTOMER_FIREWALL_ID: ${{ vars.CUSTOMER_FIREWALL_ID }}
+          CUSTOMER_MCP_URL: ${{ vars.CUSTOMER_MCP_URL }}
+          CUSTOMER_MCP_ACCESS_TOKEN: ${{ secrets.CUSTOMER_MCP_ACCESS_TOKEN }}
+      - name: Upload customer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: customer-qualification-${{ matrix.consumer }}
+          retention-days: 7
+          path: results/
+          if-no-files-found: warn
+      - name: Enforce qualified rollout
+        env:
+          OUTCOME: ${{ steps.acceptance.outcome }}
+        run: test "$OUTCOME" = success
