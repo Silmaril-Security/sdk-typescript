@@ -110,9 +110,10 @@ export function normalizeHarmfulOutcome(
   return isHarmfulOutcome(value) ? value : (value as UnknownOutcome);
 }
 
-export function normalizeHarmfulOutcomeMap(
+function normalizeNumericOutcomeMap(
   values: unknown,
   fieldName: string,
+  accepts: (value: number) => boolean,
 ): Readonly<Partial<Record<HarmfulOutcome, number>>> | undefined {
   if (values === undefined || values === null) {
     return undefined;
@@ -123,7 +124,7 @@ export function normalizeHarmfulOutcomeMap(
   const out: Partial<Record<HarmfulOutcome, number>> = {};
   for (const [key, value] of Object.entries(values)) {
     const normalizedKey = normalizeHarmfulOutcome(key, `${fieldName} key`);
-    if (typeof value !== "number") {
+    if (typeof value !== "number" || !accepts(value)) {
       throw new Error(`Firewall: invalid ${fieldName} value for ${JSON.stringify(key)}`);
     }
     out[normalizedKey] = value;
@@ -131,23 +132,16 @@ export function normalizeHarmfulOutcomeMap(
   return Object.freeze(out);
 }
 
+export function normalizeHarmfulOutcomeMap(
+  values: unknown,
+  fieldName: string,
+): Readonly<Partial<Record<HarmfulOutcome, number>>> | undefined {
+  return normalizeNumericOutcomeMap(values, fieldName, (value) => value >= 0 && value <= 1);
+}
+
 export function normalizeHarmfulOutcomeCountMap(
   values: unknown,
   fieldName: string,
 ): Readonly<Partial<Record<HarmfulOutcome, number>>> | undefined {
-  const out = normalizeHarmfulOutcomeMap(values, fieldName);
-  if (out === undefined) {
-    return undefined;
-  }
-  for (const [key, value] of Object.entries(out)) {
-    if (
-      typeof value !== "number"
-      || !Number.isFinite(value)
-      || !Number.isInteger(value)
-      || value < 0
-    ) {
-      throw new Error(`Firewall: invalid ${fieldName} value for ${JSON.stringify(key)}`);
-    }
-  }
-  return out;
+  return normalizeNumericOutcomeMap(values, fieldName, (value) => Number.isInteger(value) && value >= 0);
 }
