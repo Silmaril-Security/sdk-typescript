@@ -73,6 +73,16 @@ describe("outcomes", () => {
     ).toThrow(/invalid outcome_scores value/);
   });
 
+  it.each([-0.1, 1.1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid scores %s without restricting detector counts",
+    (value) => {
+      for (const field of ["outcome_scores", "detector_scores"]) {
+        expect(() => normalizeHarmfulOutcomeMap({ future_outcome: value }, field))
+          .toThrow(`invalid ${field} value`);
+      }
+    },
+  );
+
   it("normalizes detector count maps as finite non-negative integers", () => {
     expect(
       normalizeHarmfulOutcomeCountMap(
