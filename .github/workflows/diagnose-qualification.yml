@@ -7,6 +7,10 @@ permissions:
   actions: read
 jobs:
   observe:
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -22,30 +26,46 @@ jobs:
           run-id: 44935190047
           name: typescript-dist
           path: /tmp/qualification/package
-      - name: Verify and install original candidate
+      - name: Create scoped repository read token
+        id: reader
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.CUSTOMER_TESTS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CUSTOMER_TESTS_APP_PRIVATE_KEY }}
+          owner: Silmaril-Security
+          repositories: SilmarilCustomerTests
+          permission-contents: read
+      - uses: actions/checkout@v4
+        with:
+          repository: Silmaril-Security/SilmarilCustomerTests
+          ref: 1a77a9bfcb634c2851fb966261f4413e1542e158
+          token: ${{ steps.reader.outputs.token }}
+          persist-credentials: false
+          path: _customer
+      - name: Verify original candidate
         run: |
           cd /tmp/qualification
           tarball=$(realpath package/*.tgz)
           echo "2a9a9da8e1d8c33397ed28d508a11382f443b541c7a13926bb887df5109b9e15  $tarball" | sha256sum --check
           echo "b7c80629834d787f410cacaf12160ed3b9e382d41c15ae7fde1aa06343b85686  $GITHUB_WORKSPACE/.github/qa/acceptance-scenario.json" | sha256sum --check
-          npm install --ignore-scripts --no-audit --no-fund "$tarball"
+
       - name: Run original consumers with scoped transport diagnostics
         env:
           SILMARIL_API_URL: ${{ vars.CUSTOMER_API_URL }}
           SILMARIL_API_KEY: ${{ secrets.CUSTOMER_API_KEY }}
         run: |
           set -eu
-          export CUSTOMER_SCENARIO="$GITHUB_WORKSPACE/.github/qa/acceptance-scenario.json"
-          for i in 1 2 3 4 5 6; do
+          tarball=$(realpath /tmp/qualification/package/*.tgz)
+          export CUSTOMER_BACKEND_ID=test-tenant-a
+          export NODE_OPTIONS="--import=$GITHUB_WORKSPACE/.github/qa/observe.mjs"
+          export QA_OBSERVATIONS="$RUNNER_TEMP/transport.txt"
+          touch "$QA_OBSERVATIONS"
+          trap 'cat "$QA_OBSERVATIONS"' EXIT
+          for i in 1 2 3; do
             for consumer in consumer_protect.mjs consumer.mjs; do
-              dir=$(mktemp -d -p /tmp/qualification)
-              cd "$dir"
-              cp "$GITHUB_WORKSPACE/customer/$consumer" .
-              export CUSTOMER_RESULT="$dir/observed.json"
-              CUSTOMER_RUN_ID=$(node -p "crypto.randomUUID()")
-              export CUSTOMER_RUN_ID
-              echo "Consumer $consumer run $CUSTOMER_RUN_ID"
-              node --import "$GITHUB_WORKSPACE/.github/qa/observe.mjs" "$consumer"
-              jq -e '(.cases | length == 2) and .cases[0].blocked == false and .cases[1].blocked == true' "$CUSTOMER_RESULT" >/dev/null
+              python _customer/customer_tests/cli.py run --sdk typescript --artifact "$tarball" \
+                --consumer "customer/$consumer" --source-sha 40c9766e48712745e87b558e610fd5c6a9fc82de \
+                --framework-sha 1a77a9bfcb634c2851fb966261f4413e1542e158 \
+                --scenario _customer/scenarios/repository-assistant.json
             done
           done
