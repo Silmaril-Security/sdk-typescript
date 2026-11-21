@@ -1,0 +1,51 @@
+name: Diagnose SDK customer acceptance
+on:
+  push:
+    branches: [fix/nov21-sdk-customer-qualification]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44935190047
+          name: typescript-dist
+          path: /tmp/qualification/package
+      - name: Verify and install original candidate
+        run: |
+          cd /tmp/qualification
+          tarball=$(realpath package/*.tgz)
+          echo "2a9a9da8e1d8c33397ed28d508a11382f443b541c7a13926bb887df5109b9e15  $tarball" | sha256sum --check
+          echo "b7c80629834d787f410cacaf12160ed3b9e382d41c15ae7fde1aa06343b85686  $GITHUB_WORKSPACE/.github/qa/acceptance-scenario.json" | sha256sum --check
+          npm install --ignore-scripts --no-audit --no-fund "$tarball"
+      - name: Run original consumers with scoped transport diagnostics
+        env:
+          SILMARIL_API_URL: ${{ vars.CUSTOMER_API_URL }}
+          SILMARIL_API_KEY: ${{ secrets.CUSTOMER_API_KEY }}
+        run: |
+          set -eu
+          export CUSTOMER_SCENARIO="$GITHUB_WORKSPACE/.github/qa/acceptance-scenario.json"
+          for i in 1 2 3 4 5 6; do
+            for consumer in consumer_protect.mjs consumer.mjs; do
+              dir=$(mktemp -d -p /tmp/qualification)
+              cd "$dir"
+              cp "$GITHUB_WORKSPACE/customer/$consumer" .
+              export CUSTOMER_RESULT="$dir/observed.json"
+              CUSTOMER_RUN_ID=$(node -p "crypto.randomUUID()")
+              export CUSTOMER_RUN_ID
+              echo "Consumer $consumer run $CUSTOMER_RUN_ID"
+              node --import "$GITHUB_WORKSPACE/.github/qa/observe.mjs" "$consumer"
+              jq -e '(.cases | length == 2) and .cases[0].blocked == false and .cases[1].blocked == true' "$CUSTOMER_RESULT" >/dev/null
+            done
+          done
