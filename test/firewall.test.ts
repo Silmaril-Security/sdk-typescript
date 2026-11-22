@@ -17,6 +17,13 @@ import { SDK_VERSION } from "../src/firewall.js";
 const TEST_API_URL = "https://api.test.invalid/classify";
 const ERROR_BODY_CAP = 1 << 16;
 const NATIVE_FETCH = globalThis.fetch;
+const PYTHON_BLANK_OUTCOME_LABELS = [
+  ["empty", ""],
+  ["NEL", "\u0085"],
+  ["NBSP", "\u00a0"],
+  ["separator controls", "\u001c\u001d\u001e\u001f"],
+  ["mixed whitespace", " \t\u0085\u00a0\u001c\u2007\u2029\u3000\n"],
+] as const;
 
 interface MockCall {
   url: string;
@@ -359,6 +366,112 @@ describe("Firewall.classify", () => {
         data_exfiltration: 2,
       },
     });
+  });
+
+  it("preserves nonblank future outcome labels and Python-nonblank U+FEFF", async () => {
+    const paddedLabel = "  future outcome\u00a0 ";
+    const bomLabel = "\ufeff";
+    const paddedBenign = " benign ";
+    const prototypeLabel = "__proto__";
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.91,
+          primary_outcome: paddedLabel,
+          outcome_scores: {
+            [paddedLabel]: 0.8,
+            [paddedBenign]: 0.7,
+          },
+          detector_scores: { [bomLabel]: 0.6 },
+          detector_counts: Object.fromEntries([[prototypeLabel, 2]]),
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+    const result = await fw.classify("x");
+
+    expect(result.primaryOutcome).toBe(paddedLabel);
+    expect(result.outcomeScores).toEqual({
+      [paddedLabel]: 0.8,
+      [paddedBenign]: 0.7,
+    });
+    expect(result.detectorScores).toEqual({ [bomLabel]: 0.6 });
+    expect(Object.getOwnPropertyDescriptor(result.detectorCounts, prototypeLabel)?.value).toBe(2);
+  });
+
+  it.each(PYTHON_BLANK_OUTCOME_LABELS)(
+    "rejects %s-only primary and harmful outcome labels",
+    async (_description, label) => {
+      const responses: Array<{ status: number; body: unknown }> = [
+        {
+          status: 200,
+          body: { prediction: "MALICIOUS", score: 0.91, primary_outcome: label },
+        },
+        ...(["outcome_scores", "detector_scores", "detector_counts"] as const).map((field) => ({
+          status: 200,
+          body: {
+            prediction: "MALICIOUS",
+            score: 0.91,
+            [field]: { [label]: field === "detector_counts" ? 1 : 0.8 },
+          },
+        })),
+      ];
+      mockFetch(responses);
+      const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+      await expect(fw.classify("x")).rejects.toThrow(/invalid primary_outcome/);
+      for (const field of ["outcome_scores", "detector_scores", "detector_counts"]) {
+        await expect(fw.classify("x")).rejects.toThrow(`invalid ${field} key`);
+      }
+    },
+  );
+
+  it("rejects the exact benign harmful-map key but keeps padded benign labels open", async () => {
+    mockFetch(
+      ["outcome_scores", "detector_scores", "detector_counts"].map((field) => ({
+        status: 200,
+        body: {
+          prediction: "MALICIOUS",
+          score: 0.91,
+          [field]: { [Outcome.Benign]: field === "detector_counts" ? 1 : 0.8 },
+        },
+      })),
+    );
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    for (const field of ["outcome_scores", "detector_scores", "detector_counts"]) {
+      await expect(fw.classify("x")).rejects.toThrow(`invalid ${field} key`);
+    }
+  });
+
+  it("preserves null optional maps and rejects a null primary outcome", async () => {
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          prediction: "BENIGN",
+          score: 0.1,
+          outcome_scores: null,
+          detector_scores: null,
+          detector_counts: null,
+        },
+      },
+      {
+        status: 200,
+        body: { prediction: "MALICIOUS", score: 0.91, primary_outcome: null },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    await expect(fw.classify("x")).resolves.toEqual({
+      prediction: "BENIGN",
+      score: 0.1,
+      threshold: 0.5,
+      mode: "block",
+    });
+    await expect(fw.classify("x")).rejects.toThrow(/invalid primary_outcome/);
   });
 
   it("rejects malformed Sapphire outcome fields", async () => {
@@ -848,6 +961,45 @@ describe("Firewall.classifyBatch", () => {
       detectorScores: { [Outcome.InformationDisclosure]: 0.85 },
       detectorCounts: { [Outcome.InformationDisclosure]: 1 },
     });
+  });
+
+  it("applies open-ended nonblank outcome labels to batch responses", async () => {
+    const paddedLabel = " future_outcome ";
+    mockFetch([
+      {
+        status: 200,
+        body: {
+          predictions: [
+            {
+              prediction: "MALICIOUS",
+              score: 0.9,
+              primary_outcome: "\ufeff",
+              outcome_scores: { [paddedLabel]: 0.8 },
+              detector_counts: { [paddedLabel]: 1 },
+            },
+          ],
+        },
+      },
+      {
+        status: 200,
+        body: {
+          predictions: [
+            {
+              prediction: "MALICIOUS",
+              score: 0.9,
+              detector_counts: { ["\u001c\u0085\u00a0"]: 1 },
+            },
+          ],
+        },
+      },
+    ]);
+    const fw = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
+
+    const [result] = await fw.classifyBatch(["x"]);
+    expect(result?.primaryOutcome).toBe("\ufeff");
+    expect(result?.outcomeScores).toEqual({ [paddedLabel]: 0.8 });
+    expect(result?.detectorCounts).toEqual({ [paddedLabel]: 1 });
+    await expect(fw.classifyBatch(["x"])).rejects.toThrow(/invalid detector_counts key/);
   });
 
   it.each([

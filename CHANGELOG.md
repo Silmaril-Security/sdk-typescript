@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.2
+
+- Reject blank and Python-whitespace-only primary outcome labels and harmful
+  score/count map keys while preserving nonblank open-ended labels verbatim.
+  This includes Python's separator controls, NEL, and non-ASCII spaces while
+  retaining U+FEFF as nonblank.
+
 ## 0.10.1
 
 - Reject missing, null, string, non-finite, or out-of-range response `score`
