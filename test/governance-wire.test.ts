@@ -23,8 +23,8 @@ describe("governance response evidence", () => {
             id: "create_issue",
             parent_id: "github",
           },
-          identity_revision: "identity-revision-42",
-          reason: "identity_unresolved",
+          identity_revision: " identity-revision-42 ",
+          reason: " identity_unresolved ",
         },
       })),
     );
@@ -45,8 +45,8 @@ describe("governance response evidence", () => {
         id: "create_issue",
         parentId: "github",
       },
-      identityRevision: "identity-revision-42",
-      reason: "identity_unresolved",
+      identityRevision: " identity-revision-42 ",
+      reason: " identity_unresolved ",
     });
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.governance)).toBe(true);
@@ -151,12 +151,32 @@ describe("governance response evidence", () => {
         {
           name: "a non-string identity revision",
           evidence: { identity_revision: 42 },
-          error: /identity_revision must be a string when provided/,
+          error: /identity_revision must be a non-empty string when provided/,
+        },
+        {
+          name: "a blank identity revision",
+          evidence: { identity_revision: "" },
+          error: /identity_revision must be a non-empty string when provided/,
+        },
+        {
+          name: "a whitespace-only identity revision",
+          evidence: { identity_revision: " \t\n" },
+          error: /identity_revision must be a non-empty string when provided/,
         },
         {
           name: "a non-string reason",
           evidence: { reason: ["identity_unresolved"] },
-          error: /reason must be a string when provided/,
+          error: /reason must be a non-empty string when provided/,
+        },
+        {
+          name: "a blank reason",
+          evidence: { reason: "" },
+          error: /reason must be a non-empty string when provided/,
+        },
+        {
+          name: "a whitespace-only reason",
+          evidence: { reason: " \t\n" },
+          error: /reason must be a non-empty string when provided/,
         },
       ])("rejects $name", async ({ evidence, error }) => {
         const prediction = {
@@ -186,6 +206,40 @@ describe("governance response evidence", () => {
 
         await expect(classification).rejects.toThrow(error);
         expect(fetch).toHaveBeenCalledOnce();
+      });
+
+      it.each([
+        { name: "omitted", evidence: {} },
+        { name: "null", evidence: { identity_revision: null, reason: null } },
+      ])("accepts legacy optional evidence when $name", async ({ evidence }) => {
+        const prediction = {
+          prediction: "BENIGN",
+          score: 0.1,
+          threshold: 0.5,
+          governance: {
+            action: "allow",
+            policy_version: "legacy-compatible",
+            ...evidence,
+          },
+        };
+        globalThis.fetch = vi.fn(async () =>
+          new Response(JSON.stringify(
+            method === "classify" ? prediction : { predictions: [prediction] },
+          )),
+        );
+        const fw = new Firewall({
+          apiKey: "sk-test",
+          apiUrl: "https://example.com/classify",
+        });
+
+        const classification = method === "classify"
+          ? await fw.classify("synthetic")
+          : (await fw.classifyBatch(["synthetic"]))[0];
+
+        expect(classification?.governance).toEqual({
+          action: "allow",
+          policyVersion: "legacy-compatible",
+        });
       });
     },
   );
