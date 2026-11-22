@@ -45,7 +45,7 @@ import type {
   ReviewLevel,
 } from "./types.js";
 
-export const SDK_VERSION = "0.10.0";
+export const SDK_VERSION = "0.10.1";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
@@ -353,14 +353,20 @@ function governanceDecisionFromResponse(value: unknown): GovernanceDecision {
   if (
     value.identity_revision !== undefined
     && value.identity_revision !== null
-    && typeof value.identity_revision !== "string"
+    && (typeof value.identity_revision !== "string" || !value.identity_revision.trim())
   ) {
     throw new Error(
-      "Firewall: response governance identity_revision must be a string when provided",
+      "Firewall: response governance identity_revision must be a non-empty string when provided",
     );
   }
-  if (value.reason !== undefined && value.reason !== null && typeof value.reason !== "string") {
-    throw new Error("Firewall: response governance reason must be a string when provided");
+  if (
+    value.reason !== undefined
+    && value.reason !== null
+    && (typeof value.reason !== "string" || !value.reason.trim())
+  ) {
+    throw new Error(
+      "Firewall: response governance reason must be a non-empty string when provided",
+    );
   }
   const resource = value.resource === undefined || value.resource === null
     ? undefined

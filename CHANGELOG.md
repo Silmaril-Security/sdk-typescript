@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.1
+
+- Reject missing, null, string, non-finite, or out-of-range response `score`
+  and `threshold` values instead of coercing them during single or batch
+  verdict decoding.
+- Reject non-finite or out-of-range `outcome_scores` and `detector_scores`
+  values while continuing to require non-negative integer `detector_counts`.
+- Reject present blank or whitespace-only governance `reason` and
+  `identity_revision` evidence. Omitted and null legacy evidence remains valid,
+  and nonblank strings are returned without trimming.
+
 ## 0.10.0
 
 - Classify model output by default: `LLM_END` joins `DEFAULT_HOOKS` for the
