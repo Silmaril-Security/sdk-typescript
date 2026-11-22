@@ -19,7 +19,7 @@ async function verify(suite) {
   const payloads = [];
   globalThis.fetch = async (_url, request) => {
     payloads.push(JSON.parse(request.body));
-    return new Response(JSON.stringify({ prediction: "BENIGN", score: 0, threshold: 0.5, mode: "block" }), {
+    return new Response(JSON.stringify({ results: [{ action: "allow", source: null, confidence: null, severity: null, outcome: null, governance: null, model_id: null }] }), {
       status: 200, headers: { "content-type": "application/json" },
     });
   };

@@ -34,6 +34,15 @@ const { createMiddlewareV4: createCjsVercelMiddlewareV4 } = require(
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const API_URL = "https://package.test.invalid/classify";
+const ALLOW = {
+  action: "allow",
+  source: null,
+  confidence: null,
+  severity: null,
+  outcome: null,
+  governance: null,
+  model_id: null,
+};
 
 function response(body) {
   return new Response(JSON.stringify(body), {
@@ -60,12 +69,7 @@ async function verifyLangChainCompatibility(suite) {
   let fetchCalls = 0;
   globalThis.fetch = async () => {
     fetchCalls += 1;
-    return response({
-      prediction: "BENIGN",
-      score: 0.1,
-      threshold: 0.5,
-      review: "standard",
-    });
+    return response({ results: [ALLOW], review: "standard" });
   };
   const firewall = new suite.Firewall({
     apiKey: "package-test",
@@ -95,11 +99,7 @@ async function verifyDeepAgentsCompatibility(suite) {
   let fetchCalls = 0;
   globalThis.fetch = async () => {
     fetchCalls += 1;
-    return response({
-      prediction: "BENIGN",
-      score: 0.1,
-      threshold: 0.5,
-    });
+    return response({ results: [ALLOW] });
   };
   const firewall = new suite.Firewall({
     apiKey: "package-test",

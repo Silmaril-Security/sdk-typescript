@@ -25,7 +25,7 @@ describe("Firewall.protect", () => {
   });
 
   it("withholds the result of a blocked input and aborts the operation", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     let aborted = false;
 
@@ -38,7 +38,7 @@ describe("Firewall.protect", () => {
   });
 
   it("classifies extracted output before returning it", async () => {
-    const held = heldFirewall(["BENIGN", "MALICIOUS"]);
+    const held = heldFirewall(["allow", "block"]);
     held.release();
 
     const outcome = held.firewall.protect(async () => "leaked secret", {
@@ -52,7 +52,7 @@ describe("Firewall.protect", () => {
   });
 
   it("returns before the verdict in shadow mode", async () => {
-    const held = heldFirewall(["MALICIOUS"], { mode: "shadow" });
+    const held = heldFirewall(["block"], { mode: "shadow" });
 
     await expect(held.firewall.protect(async () => "answer", { text: "attack" })).resolves.toBe("answer");
 
@@ -74,7 +74,7 @@ describe("Firewall.protect", () => {
 
 describe("background classifications", () => {
   it("are sent in order within one conversation", async () => {
-    const held = heldFirewall(["BENIGN"], { mode: "shadow" });
+    const held = heldFirewall(["allow"], { mode: "shadow" });
     const metadata = { conversationId: "conversation-1" };
 
     await held.firewall.protect(async () => "answer", {
@@ -94,7 +94,7 @@ describe("background classifications", () => {
 
   it("are dropped once a conversation queue is full", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const held = heldFirewall(["BENIGN"], { mode: "shadow", maxQueued: 1 });
+    const held = heldFirewall(["allow"], { mode: "shadow", maxQueued: 1 });
     const metadata = { conversationId: "conversation-1" };
 
     await held.firewall.protect(async () => undefined, { text: "first", metadata });
@@ -122,7 +122,7 @@ describe("background classifications", () => {
   });
 
   it("respect the in-flight limit", async () => {
-    const held = heldFirewall(["BENIGN"], { mode: "shadow", maxConcurrent: 1 });
+    const held = heldFirewall(["allow"], { mode: "shadow", maxConcurrent: 1 });
 
     void held.firewall.observe("first");
     void held.firewall.observe("second");

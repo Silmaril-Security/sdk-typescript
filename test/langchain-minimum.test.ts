@@ -14,7 +14,7 @@ describe("minimum LangChain compatibility", () => {
     const ids: unknown[] = [];
     fw.classify = vi.fn(async (_text, options) => {
       ids.push(options?.metadata?.conversationId);
-      return { prediction: "BENIGN", score: 0, threshold: 0.5, mode: "block" };
+      return { action: "allow", mode: "block" };
     }) as typeof fw.classify;
     class Model extends FakeListChatModel {
       override async _generate() {
@@ -40,7 +40,7 @@ it("resolves saved native defaults and dynamic factories before protection on mi
   const ids: unknown[] = [];
   fw.classify = vi.fn(async (_text, options) => {
     ids.push(options?.metadata?.conversationId);
-    return { prediction: "BENIGN", score: 0, threshold: 0.5, mode: "block" };
+    return { action: "allow", mode: "block" };
   }) as typeof fw.classify;
   const native = new FakeListChatModel({ responses: ["result"] });
   const saved = await protectLangChainRunnable(fw, native.withConfig({ configurable: { thread_id: "saved" } }));

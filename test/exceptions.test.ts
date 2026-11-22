@@ -44,25 +44,41 @@ describe("SilmarilApiError", () => {
 });
 
 describe("FirewallBlockedException", () => {
-  it("formats score and threshold to 4 decimals", () => {
-    const err = new FirewallBlockedException({
-      score: 0.9876543,
-      threshold: 0.5,
-      promptText: "hello",
-    });
-    expect(err.message).toContain("score=0.9877");
-    expect(err.message).toContain("threshold=0.5000");
+  it.each([
+    { name: "no result", params: {} },
+    {
+      name: "a model block",
+      params: {
+        result: {
+          action: "block" as const,
+          source: "model",
+          confidence: "high" as const,
+          severity: "moderate" as const,
+          outcome: "control_abuse",
+        },
+      },
+    },
+    {
+      name: "a model block that governance also blocks",
+      params: {
+        result: {
+          action: "block" as const,
+          source: "model",
+          governance: { action: "block" as const, policyVersion: "v1" },
+        },
+      },
+    },
+  ])("formats the message for $name", ({ params }) => {
+    const err = new FirewallBlockedException({ promptText: "hello", ...params });
+    expect(err.message).toBe("Request blocked by Silmaril Firewall: 'hello'");
   });
 
-  it("identifies a benign governance-policy denial", () => {
+  it("identifies a governance-policy denial", () => {
     const err = new FirewallBlockedException({
-      score: 0.1,
-      threshold: 0.5,
       promptText: "hello",
       result: {
-        prediction: "BENIGN",
-        score: 0.1,
-        threshold: 0.5,
+        action: "block",
+        source: "governance",
         governance: { action: "block", ruleId: "policy-rule", policyVersion: "v1" },
       },
     });
@@ -73,8 +89,6 @@ describe("FirewallBlockedException", () => {
 
   it("includes the prompt text verbatim when under the display limit", () => {
     const err = new FirewallBlockedException({
-      score: 0.9,
-      threshold: 0.5,
       promptText: "short prompt",
     });
     expect(err.message).toContain("'short prompt'");
@@ -83,8 +97,6 @@ describe("FirewallBlockedException", () => {
   it("truncates prompt text over 100 chars with an ellipsis", () => {
     const longText = "x".repeat(150);
     const err = new FirewallBlockedException({
-      score: 0.9,
-      threshold: 0.5,
       promptText: longText,
     });
     expect(err.message).toContain(`'${"x".repeat(100)}...'`);
@@ -94,8 +106,6 @@ describe("FirewallBlockedException", () => {
   it("does not truncate exactly at the 100-char boundary", () => {
     const exactText = "y".repeat(100);
     const err = new FirewallBlockedException({
-      score: 0.9,
-      threshold: 0.5,
       promptText: exactText,
     });
     expect(err.message).toContain(`'${exactText}'`);
@@ -104,14 +114,11 @@ describe("FirewallBlockedException", () => {
 
   it("exposes blocking context as readable fields", () => {
     const result = Object.freeze({
-      prediction: "MALICIOUS" as const,
-      score: 0.7,
-      threshold: 0.5,
+      action: "block" as const,
+      source: "model",
       mode: "block" as const,
     });
     const err = new FirewallBlockedException({
-      score: 0.7,
-      threshold: 0.5,
       promptText: "p",
       runId: "run-42",
       hook: HookLabel.TOOL_CALL,
@@ -119,8 +126,8 @@ describe("FirewallBlockedException", () => {
       toolCallId: "tc-42",
       result,
     });
-    expect(err.score).toBe(0.7);
-    expect(err.threshold).toBe(0.5);
+    expect(err).not.toHaveProperty("score");
+    expect(err).not.toHaveProperty("threshold");
     expect(err.promptText).toBe("p");
     expect(err.runId).toBe("run-42");
     expect(err.hook).toBe(HookLabel.TOOL_CALL);
@@ -131,12 +138,12 @@ describe("FirewallBlockedException", () => {
   });
 
   it("leaves runId undefined when not provided", () => {
-    const err = new FirewallBlockedException({ score: 0.9, threshold: 0.5, promptText: "p" });
+    const err = new FirewallBlockedException({ promptText: "p" });
     expect(err.runId).toBeUndefined();
   });
 
   it("remains an instanceof FirewallBlockedException, deprecated alias, and Error", () => {
-    const err = new FirewallBlockedException({ score: 0.9, threshold: 0.5, promptText: "p" });
+    const err = new FirewallBlockedException({ promptText: "p" });
     expect(PromptBlockedException).toBe(FirewallBlockedException);
     expect(err).toBeInstanceOf(FirewallBlockedException);
     expect(err).toBeInstanceOf(PromptBlockedException);

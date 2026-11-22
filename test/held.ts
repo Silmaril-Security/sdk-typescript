@@ -5,6 +5,7 @@ import { vi } from "vitest";
 import {
   Firewall,
   type ClassifyOptions,
+  type FirewallAction,
   type FirewallOptions,
   type HookLabel,
 } from "../src/index.js";
@@ -26,7 +27,7 @@ export interface HeldFirewall {
 
 /** A firewall whose classifications stay open until the test releases them. */
 export function heldFirewall(
-  predictions: ReadonlyArray<"BENIGN" | "MALICIOUS"> = ["BENIGN"],
+  actions: ReadonlyArray<FirewallAction> = ["allow"],
   options: Partial<FirewallOptions> = {},
 ): HeldFirewall {
   const firewall = new Firewall({
@@ -40,7 +41,7 @@ export function heldFirewall(
   let markStarted!: () => void;
   const started = new Promise<void>((resolve) => { markStarted = resolve; });
   firewall.classify = vi.fn(async (text, classifyOptions) => {
-    const prediction = predictions[Math.min(calls.length, predictions.length - 1)]!;
+    const action = actions[Math.min(calls.length, actions.length - 1)]!;
     calls.push({
       text,
       hook: classifyOptions?.hook,
@@ -50,9 +51,7 @@ export function heldFirewall(
     await released;
     const mode = classifyOptions?.mode ?? firewall.mode;
     return Object.freeze({
-      prediction,
-      score: prediction === "MALICIOUS" ? 0.9 : 0.1,
-      threshold: 0.5,
+      action,
       ...(mode === undefined ? {} : { mode }),
     });
   }) as typeof firewall.classify;
@@ -63,7 +62,7 @@ export interface GatedCall {
   text: string;
   options: ClassifyOptions | undefined;
   /** Let this one classification return its verdict. */
-  resolve: (prediction?: "BENIGN" | "MALICIOUS") => void;
+  resolve: (action?: FirewallAction) => void;
 }
 
 export interface GatedFirewall {
@@ -87,12 +86,10 @@ export function gatedFirewall(options: Partial<FirewallOptions> = {}): GatedFire
     calls.push({
       text,
       options: classifyOptions,
-      resolve: (prediction = "BENIGN") => {
+      resolve: (action: FirewallAction = "allow") => {
         const mode = classifyOptions?.mode ?? firewall.mode;
         resolve(Object.freeze({
-          prediction,
-          score: prediction === "MALICIOUS" ? 0.9 : 0.1,
-          threshold: 0.5,
+          action,
           ...(mode === undefined ? {} : { mode }),
         }));
       },

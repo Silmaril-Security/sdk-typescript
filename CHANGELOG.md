@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.0.0
+
+The SDK now calls `POST /v2/classify` and returns its decision. This is a
+breaking release for code that reads classification results; no configuration
+changes are needed.
+
+- Call `/v2/classify`. The existing `apiUrl` option is accepted unchanged: the
+  SDK removes a trailing slash and a final `/classify` or `/v2/classify` path,
+  keeps the query string, and appends `/v2/classify`. An `apiUrl` that is not
+  an absolute URL now throws from the constructor instead of from the first
+  request.
+- Work against runtimes without `/v2/classify`. When that call answers 403,
+  404, or 405, the SDK sends the same request to `/classify`, returns that
+  response, success or error, and remembers a successful fallback on the
+  client instance. `action`, `source`, `outcome`, `governance`, and `modelId`
+  are derived from the `/classify` response; `confidence` and `severity` are
+  null on the wire and absent from the result. A successful response without
+  a `results` key is read as a `/classify` response whichever path returned
+  it.
+- Replace the result fields. `BlockResult` carries `action`, `source`,
+  `confidence`, `severity`, `outcome`, `governance`, `modelId`, `review`, and
+  `mode`. Add the `FirewallAction`, `Confidence`, and `Severity` types.
+- Add `BlockResult.modelId`, the identifier of the model release that
+  classified the item, for provenance.
+- Enforce on `action` alone: `protect()` and every adapter block on any
+  `action` other than `allow` when the effective mode is `block`. Evidence
+  fields are passed through without validation and never affect enforcement.
+- Require every response to carry a `results` array with one item per input
+  and a string `action` on each item.
+- Remove `prediction`, `score`, `threshold`, `primaryOutcome`,
+  `outcomeScores`, `detectorScores`, and `detectorCounts` from `BlockResult`,
+  and `score` and `threshold` from `FirewallBlockedException`, whose message
+  no longer quotes them. Remove the `Prediction`, `PrimaryOutcome`,
+  `HarmfulOutcome`, and `UnknownOutcome` types and the
+  `normalizePrimaryOutcome`, `normalizeHarmfulOutcome`, and
+  `normalizeHarmfulOutcomeMap` functions.
+- Remove the benign outcome. `outcome` is absent on an allow, so
+  `Outcome.Benign`, `PRIMARY_OUTCOMES`, `isPrimaryOutcome`, and
+  `KnownPrimaryOutcome` are gone and `OUTCOME_DESCRIPTIONS` has no benign
+  entry. `HARMFUL_OUTCOMES`, `isHarmfulOutcome`, and `KnownHarmfulOutcome`
+  remain.
+- `mode` keeps its precedence: the requested mode, then a `mode` on a
+  `/classify` fallback response, then Block. A `/v2/classify` response carries
+  no mode.
+
+Migration:
+
+| 0.x | 1.0.0 |
+|---|---|
+| `prediction` | `action` (`"allow"` or `"block"`) |
+| `primaryOutcome` | `outcome` |
+| `score`, `threshold` | `confidence`, `severity` |
+| `predictions` (batch response) | `results` (every response) |
+
+`confidence` and `severity` are ordered labels rather than numbers. They
+describe the Firewall's assessment of the item and are set only when that
+assessment is the reason for the block; they are absent on an allow, on a
+block that came from a governance policy, and on a block the Firewall reached
+without that assessment. Releases in the `0.x` line keep working against
+`/classify`, which is frozen.
+
 ## 0.10.3
 
 - Match Python `str.strip()` when validating optional governance

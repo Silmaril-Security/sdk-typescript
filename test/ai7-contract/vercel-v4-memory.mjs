@@ -64,12 +64,7 @@ async function runChild() {
   firewall.classify = async (text) => {
     classifications++;
     const blocked = text.includes(BLOCKED_MARKER);
-    return {
-      prediction: blocked ? "MALICIOUS" : "BENIGN",
-      score: blocked ? 0.9 : 0.1,
-      threshold: 0.5,
-      mode: "block",
-    };
+    return { action: blocked ? "block" : "allow", mode: "block" };
   };
 
   const middleware = createMiddlewareV4(firewall, {

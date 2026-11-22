@@ -324,7 +324,7 @@ export function createDeepAgentsMiddleware(firewall: Firewall, options: DeepAgen
 
   const decide = (result: BlockResult, text: string, hook: HookLabel, toolName?: string): Decision => {
     const mode = effectiveMode ?? result.mode ?? "block";
-    const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
+    const blocked = result.action !== "allow";
     if (options.onClassify) {
       try {
         options.onClassify({ hook, ...(toolName === undefined ? {} : { toolName }), text, result, blocked, mode, shadowMode: mode === "shadow" });

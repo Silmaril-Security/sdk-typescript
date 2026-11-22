@@ -3,6 +3,7 @@ import { Firewall, type FirewallMode } from "../src/index.js";
 import { createMiddleware } from "../src/adapters/vercel.js";
 import { createLangChainHandler } from "../src/adapters/langchain.js";
 import { createDeepAgentsMiddleware } from "../src/adapters/deepagents.js";
+import { blocked, decisions } from "./wire.js";
 
 const credentials = { apiKey: "offline-test", apiUrl: "https://api.test.invalid/classify" };
 // These values represent JavaScript callers and unvalidated configuration input.
@@ -41,12 +42,11 @@ describe("runtime mode validation", () => {
     expect(classify).not.toHaveBeenCalled();
   });
 
-  it.each(["malicious", "governance"] as const)("valid block prevents generation for a %s verdict", async (kind) => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      prediction: kind === "malicious" ? "MALICIOUS" : "BENIGN",
-      score: 0.9, threshold: 0.5,
-      ...(kind === "governance" ? { governance: { action: "block", policy_version: "fixture" } } : {}),
-    }), { status: 200 })));
+  it.each(["model", "governance"] as const)("valid block prevents generation for a %s block", async (source) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(decisions(blocked({
+      source,
+      ...(source === "governance" ? { governance: { action: "block", policy_version: "fixture" } } : {}),
+    }))), { status: 200 })));
     const firewall = new Firewall({ ...credentials, mode: "block" });
     const generate = vi.fn(async () => ({ text: "unreachable" }));
     await expect(createMiddleware(firewall).wrapGenerate({

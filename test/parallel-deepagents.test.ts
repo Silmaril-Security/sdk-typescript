@@ -34,7 +34,7 @@ describe("Deep Agents middleware with parallel", () => {
   });
 
   it("withholds the model response for a blocked input", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     const middleware = createDeepAgentsMiddleware(held.firewall, { parallel: true });
 
@@ -48,7 +48,7 @@ describe("Deep Agents middleware with parallel", () => {
   });
 
   it("does not wait for a model that fails after its input is blocked", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     const middleware = createDeepAgentsMiddleware(held.firewall, { parallel: true });
 
@@ -61,7 +61,7 @@ describe("Deep Agents middleware with parallel", () => {
   });
 
   it("decides the blocked-attempt cap before the model runs", async () => {
-    const held = heldFirewall(["MALICIOUS", "BENIGN"]);
+    const held = heldFirewall(["block", "allow"]);
     held.release();
     const middleware = createDeepAgentsMiddleware(held.firewall, { parallel: true, maxBlockedAttempts: 1 });
     const denied = await middleware.wrapToolCall!(
@@ -108,7 +108,7 @@ describe("Deep Agents middleware with a queued input check", () => {
 
 describe("Deep Agents middleware in shadow mode", () => {
   it("classifies an unchanged remote notification once across turns", async () => {
-    const held = heldFirewall(["BENIGN"], { mode: "shadow" });
+    const held = heldFirewall(["allow"], { mode: "shadow" });
     held.release();
     const middleware = createDeepAgentsMiddleware(held.firewall);
     const notification = new HumanMessage({
@@ -129,7 +129,7 @@ describe("Deep Agents middleware in shadow mode", () => {
   });
 
   it("classifies in the background", async () => {
-    const held = heldFirewall(["MALICIOUS"], { mode: "shadow" });
+    const held = heldFirewall(["block"], { mode: "shadow" });
     const events: string[] = [];
     const middleware = createDeepAgentsMiddleware(held.firewall, {
       onClassify: (event) => events.push(event.hook),

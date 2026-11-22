@@ -18,9 +18,7 @@ function firewallWithDecisions(mode?: "shadow" | "warn" | "block") {
   firewall.classify = vi.fn(async (text, options) => {
     calls.push({ text, hook: options?.hook, metadata: options?.metadata });
     return {
-      prediction: text.includes("deny") ? "MALICIOUS" : "BENIGN",
-      score: text.includes("deny") ? 0.9 : 0.1,
-      threshold: 0.5,
+      action: text.includes("deny") ? "block" : "allow",
       mode: "block",
     };
   }) as typeof firewall.classify;
@@ -88,7 +86,7 @@ describe("Deep Agents middleware", () => {
       await deniedToolMessage(previous, "call-2"),
     ]);
     firewall.classify = vi.fn(async () => ({
-      prediction: "MALICIOUS", score: 0.9, threshold: 0.5, mode,
+      action: "block", mode,
     })) as typeof firewall.classify;
     const events: Array<{ hook: HookLabel; mode: string }> = [];
     const middleware = createDeepAgentsMiddleware(firewall, {
@@ -123,7 +121,7 @@ describe("Deep Agents middleware", () => {
 
   it.each(["warn", "shadow", "block"] as const)("handles uninspectable Command results in %s mode", async (mode) => {
     const { firewall } = firewallWithDecisions();
-    firewall.classify = vi.fn(async () => ({ prediction: "BENIGN", score: 0.1, threshold: 0.5, mode })) as typeof firewall.classify;
+    firewall.classify = vi.fn(async () => ({ action: "allow", mode })) as typeof firewall.classify;
     const middleware = createDeepAgentsMiddleware(firewall);
     const update: Record<string, unknown> = {};
     Object.defineProperty(update, "unreadable", { enumerable: true, get() { throw new Error("cannot inspect"); } });
@@ -161,7 +159,7 @@ describe("Deep Agents middleware", () => {
       await deniedToolMessage(previous, "call-2"),
     ]);
     firewall.classify = vi.fn(async () => ({
-      prediction: "MALICIOUS", score: 0.9, threshold: 0.5, mode: "block",
+      action: "block", mode: "block",
     })) as typeof firewall.classify;
     const middleware = createDeepAgentsMiddleware(firewall, { mode, maxBlockedAttempts: 2 });
     const messages = [new HumanMessage("safe input"), ...restored];
@@ -234,8 +232,8 @@ describe("Deep Agents middleware", () => {
     const { firewall } = firewallWithDecisions();
     const toolCalls = [false, true, false, true];
     firewall.classify = vi.fn(async (_text, options) => ({
-      prediction: options?.hook === HookLabel.TOOL_CALL && toolCalls.shift() ? "MALICIOUS" : "BENIGN",
-      score: 0.9, threshold: 0.5, mode: "block",
+      action: options?.hook === HookLabel.TOOL_CALL && toolCalls.shift() ? "block" : "allow",
+      mode: "block",
     })) as typeof firewall.classify;
     const inner = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });
     const outer = createDeepAgentsMiddleware(firewall, { maxBlockedAttempts: 2 });

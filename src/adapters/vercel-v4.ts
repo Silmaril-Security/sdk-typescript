@@ -288,8 +288,7 @@ export function createMiddlewareV4(
       ...(signal === undefined ? {} : { signal }),
     });
     const result = await (parallel ? firewall.pending.submit(classify, undefined, signal) : classify());
-    const blocked =
-      result.prediction === "MALICIOUS" || result.governance?.action === "block";
+    const blocked = result.action !== "allow";
     const effectiveMode = requestedMode ?? result.mode ?? "block";
     const event = {
       hook,
@@ -305,8 +304,6 @@ export function createMiddlewareV4(
     if (!blocked || effectiveMode !== "block") return;
 
     const error = new FirewallBlockedException({
-      score: result.score,
-      threshold: result.threshold,
       promptText: text,
       hook,
       ...(context.toolName === undefined ? {} : { toolName: context.toolName }),

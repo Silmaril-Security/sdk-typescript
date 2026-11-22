@@ -20,7 +20,7 @@ function emptyStream(onCancel: () => void): ReadableStream<never> {
 
 describe("Vercel middleware defaults", () => {
   it("classifies generated text returned as content parts", async () => {
-    const held = heldFirewall(["BENIGN", "MALICIOUS"]);
+    const held = heldFirewall(["allow", "block"]);
     held.release();
 
     const outcome = createMiddleware(held.firewall).wrapGenerate({
@@ -33,7 +33,7 @@ describe("Vercel middleware defaults", () => {
   });
 
   it("classifies tool calls returned as content parts", async () => {
-    const held = heldFirewall(["BENIGN", "MALICIOUS"]);
+    const held = heldFirewall(["allow", "block"]);
     held.release();
 
     const outcome = createMiddleware(held.firewall, { scanToolCalls: true }).wrapGenerate({
@@ -127,7 +127,7 @@ describe.each<[string, Create]>([
   });
 
   it("withholds the generation of a blocked input", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     const doGenerate = vi.fn(async () => ({ content: [{ type: "text", text: "leak" }] }));
 
@@ -140,7 +140,7 @@ describe.each<[string, Create]>([
   });
 
   it("cancels a stream that started before its input was blocked", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     let cancelled!: () => void;
     const cancellation = new Promise<void>((resolve) => { cancelled = resolve; });
