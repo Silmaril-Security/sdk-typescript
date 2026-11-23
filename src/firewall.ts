@@ -26,7 +26,7 @@ import {
   validateLimit,
 } from "./pending.js";
 import { sanitizeText } from "./sanitization.js";
-import { validateThreshold } from "./validation.js";
+import { isPythonNonblankString, validateThreshold } from "./validation.js";
 import type {
   BlockResult,
   ClassifyBatchOptions,
@@ -45,7 +45,7 @@ import type {
   ReviewLevel,
 } from "./types.js";
 
-export const SDK_VERSION = "0.10.2";
+export const SDK_VERSION = "0.10.3";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
@@ -353,7 +353,7 @@ function governanceDecisionFromResponse(value: unknown): GovernanceDecision {
   if (
     value.identity_revision !== undefined
     && value.identity_revision !== null
-    && (typeof value.identity_revision !== "string" || !value.identity_revision.trim())
+    && !isPythonNonblankString(value.identity_revision)
   ) {
     throw new Error(
       "Firewall: response governance identity_revision must be a non-empty string when provided",
@@ -362,7 +362,7 @@ function governanceDecisionFromResponse(value: unknown): GovernanceDecision {
   if (
     value.reason !== undefined
     && value.reason !== null
-    && (typeof value.reason !== "string" || !value.reason.trim())
+    && !isPythonNonblankString(value.reason)
   ) {
     throw new Error(
       "Firewall: response governance reason must be a non-empty string when provided",

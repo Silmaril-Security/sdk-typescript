@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.3
+
+- Match Python `str.strip()` when validating optional governance
+  `identity_revision` and `reason` evidence. Omitted and null values remain
+  compatible, and accepted nonblank strings remain unmodified.
+
 ## 0.10.2
 
 - Reject blank and Python-whitespace-only primary outcome labels and harmful

@@ -1,6 +1,8 @@
 // Copyright (c) 2024-2025 Silmaril Security Inc. All rights reserved.
 // PROPRIETARY AND CONFIDENTIAL
 
+import { isPythonNonblankString } from "./validation.js";
+
 export const Outcome = {
   Benign: "benign",
   InformationDisclosure: "information_disclosure",
@@ -81,13 +83,6 @@ export const OUTCOME_DESCRIPTIONS = {
 
 const PRIMARY_OUTCOME_SET = new Set<string>(PRIMARY_OUTCOMES);
 const HARMFUL_OUTCOME_SET = new Set<string>(HARMFUL_OUTCOMES);
-// Python str.strip() uses Unicode White_Space plus U+001C–U+001F; U+FEFF stays nonblank.
-// eslint-disable-next-line no-control-regex -- The separator range intentionally matches Python.
-const PYTHON_NONBLANK = /[^\p{White_Space}\u001c-\u001f]/u;
-
-function isNonblankOutcomeLabel(value: unknown): value is string {
-  return typeof value === "string" && PYTHON_NONBLANK.test(value);
-}
 
 export function isPrimaryOutcome(value: unknown): value is KnownPrimaryOutcome {
   return typeof value === "string" && PRIMARY_OUTCOME_SET.has(value);
@@ -101,7 +96,7 @@ export function normalizePrimaryOutcome(
   value: unknown,
   fieldName = "primary_outcome",
 ): PrimaryOutcome {
-  if (!isNonblankOutcomeLabel(value)) {
+  if (!isPythonNonblankString(value)) {
     throw new Error(`Firewall: invalid ${fieldName} ${JSON.stringify(value)}`);
   }
   return isPrimaryOutcome(value) ? value : (value as UnknownOutcome);
@@ -111,7 +106,7 @@ export function normalizeHarmfulOutcome(
   value: unknown,
   fieldName = "outcome",
 ): HarmfulOutcome {
-  if (!isNonblankOutcomeLabel(value) || value === Outcome.Benign) {
+  if (!isPythonNonblankString(value) || value === Outcome.Benign) {
     throw new Error(`Firewall: invalid ${fieldName} ${JSON.stringify(value)}`);
   }
   return isHarmfulOutcome(value) ? value : (value as UnknownOutcome);
