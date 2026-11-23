@@ -23,8 +23,8 @@ describe("governance response evidence", () => {
             id: "create_issue",
             parent_id: "github",
           },
-          identity_revision: " identity-revision-42 ",
-          reason: " identity_unresolved ",
+          identity_revision: "\u00a0\ufeff\u0085",
+          reason: "\u001cidentity_unresolved\u3000",
         },
       })),
     );
@@ -45,8 +45,8 @@ describe("governance response evidence", () => {
         id: "create_issue",
         parentId: "github",
       },
-      identityRevision: " identity-revision-42 ",
-      reason: " identity_unresolved ",
+      identityRevision: "\u00a0\ufeff\u0085",
+      reason: "\u001cidentity_unresolved\u3000",
     });
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.governance)).toBe(true);
@@ -164,6 +164,14 @@ describe("governance response evidence", () => {
           error: /identity_revision must be a non-empty string when provided/,
         },
         {
+          name: "a Python-whitespace-only identity revision",
+          evidence: {
+            identity_revision:
+              "\u001c\u001d\u001e\u001f\u0085\u00a0\u1680\u2003\u2028\u2029\u202f\u205f\u3000",
+          },
+          error: /identity_revision must be a non-empty string when provided/,
+        },
+        {
           name: "a non-string reason",
           evidence: { reason: ["identity_unresolved"] },
           error: /reason must be a non-empty string when provided/,
@@ -176,6 +184,11 @@ describe("governance response evidence", () => {
         {
           name: "a whitespace-only reason",
           evidence: { reason: " \t\n" },
+          error: /reason must be a non-empty string when provided/,
+        },
+        {
+          name: "a Python-whitespace-only reason",
+          evidence: { reason: "\u001c\u0085\u00a0\u2007\u2029\u3000" },
           error: /reason must be a non-empty string when provided/,
         },
       ])("rejects $name", async ({ evidence, error }) => {
