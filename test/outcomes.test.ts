@@ -26,7 +26,7 @@ describe("outcomes", () => {
       Outcome.StoryScriptGeneration,
       Outcome.GameGeneration,
       Outcome.WebsiteGeneration,
-      Outcome.ClickUpTermsViolation,
+      Outcome.Abuse,
       Outcome.TraditionalAiAbuse,
     ]);
     expect(HARMFUL_OUTCOMES).toEqual(PRIMARY_OUTCOMES.slice(1));

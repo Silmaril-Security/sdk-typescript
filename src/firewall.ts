@@ -45,7 +45,7 @@ import type {
   ReviewLevel,
 } from "./types.js";
 
-export const SDK_VERSION = "0.10.3";
+export const SDK_VERSION = "0.11.0";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
