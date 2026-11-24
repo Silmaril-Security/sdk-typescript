@@ -35,10 +35,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-Pin version 0.10.3 for reproducible installs:
+Pin version 0.11.0 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.10.3
+npm install @silmaril-security/sdk@0.11.0
 ```
 
 Requires Node 20 or later.
@@ -262,7 +262,7 @@ if (result.prediction === "BENIGN") {
     case Outcome.StoryScriptGeneration:
     case Outcome.GameGeneration:
     case Outcome.WebsiteGeneration:
-    case Outcome.ClickUpTermsViolation:
+    case Outcome.Abuse:
     case Outcome.TraditionalAiAbuse:
       applyTenantPolicy(result);
       break;
@@ -284,7 +284,7 @@ Outcome taxonomy:
 - `story_script_generation`: generation of narrative prose, dialogue, scripts, or story artifacts.
 - `game_generation`: generation of a game, quest, level, mechanic, or playable experience.
 - `website_generation`: generation of a website, landing page, storefront, or web experience.
-- `clickup_terms_violation`: content or actions that violate the configured ClickUp tenant policy.
+- `abuse`: content or actions that violate the tenant's acceptable-use policy.
 - `traditional_ai_abuse`: unsafe AI assistance outside the concrete security outcome classes.
 
 ## Options
