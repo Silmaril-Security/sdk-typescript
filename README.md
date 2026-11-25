@@ -296,7 +296,7 @@ if (result.action === "allow") {
     case Outcome.StoryScriptGeneration:
     case Outcome.GameGeneration:
     case Outcome.WebsiteGeneration:
-    case Outcome.ClickUpTermsViolation:
+    case Outcome.Abuse:
     case Outcome.TraditionalAiAbuse:
       applyTenantPolicy(result);
       break;
@@ -320,7 +320,7 @@ Outcome taxonomy:
 - `story_script_generation`: generation of narrative prose, dialogue, scripts, or story artifacts.
 - `game_generation`: generation of a game, quest, level, mechanic, or playable experience.
 - `website_generation`: generation of a website, landing page, storefront, or web experience.
-- `clickup_terms_violation`: content or actions that violate the configured ClickUp tenant policy.
+- `abuse`: content or actions that violate the tenant's acceptable-use policy.
 - `traditional_ai_abuse`: unsafe AI assistance outside the concrete security outcome classes.
 
 ## Options

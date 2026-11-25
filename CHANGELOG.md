@@ -61,6 +61,15 @@ block that came from a governance policy, and on a block the Firewall reached
 without that assessment. Releases in the `0.x` line keep working against
 `/classify`, which is frozen.
 
+## 0.11.0
+
+- Breaking: rename the tenant acceptable-use policy outcome to `abuse`.
+  `Outcome.Abuse` replaces the tenant-specific member, and
+  `KnownPrimaryOutcome`, `KnownHarmfulOutcome`, `PRIMARY_OUTCOMES`,
+  `HARMFUL_OUTCOMES`, and `OUTCOME_DESCRIPTIONS` list `abuse` in the same
+  position. Responses that still carry the previous label continue to decode
+  as an `UnknownOutcome` string.
+
 ## 0.10.3
 
 - Match Python `str.strip()` when validating optional governance
@@ -315,8 +324,8 @@ All notable changes to the Silmaril Firewall TypeScript SDK are documented here.
 ## 0.5.1 - 2026-07-29
 
 - Add typed support for `code_generation`, `story_script_generation`,
-  `game_generation`, `website_generation`, `clickup_terms_violation`, and
-  `traditional_ai_abuse`.
+  `game_generation`, `website_generation`, `traditional_ai_abuse`, and the
+  tenant acceptable-use policy outcome now named `abuse`.
 - Extend ordered outcome collections, descriptions, guards, normalization
   fixtures, exports, and documentation without changing the `/classify` wire
   shape.

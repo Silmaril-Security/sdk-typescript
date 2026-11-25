@@ -11,7 +11,7 @@ export const Outcome = {
   StoryScriptGeneration: "story_script_generation",
   GameGeneration: "game_generation",
   WebsiteGeneration: "website_generation",
-  ClickUpTermsViolation: "clickup_terms_violation",
+  Abuse: "abuse",
   TraditionalAiAbuse: "traditional_ai_abuse",
 } as const;
 
@@ -27,7 +27,7 @@ export const HARMFUL_OUTCOMES = [
   Outcome.StoryScriptGeneration,
   Outcome.GameGeneration,
   Outcome.WebsiteGeneration,
-  Outcome.ClickUpTermsViolation,
+  Outcome.Abuse,
   Outcome.TraditionalAiAbuse,
 ] as const satisfies readonly KnownHarmfulOutcome[];
 
@@ -50,8 +50,7 @@ export const OUTCOME_DESCRIPTIONS = {
     "Requests generation of a game, quest, level, mechanic, or playable experience.",
   [Outcome.WebsiteGeneration]:
     "Requests generation of a website, landing page, storefront, or web experience.",
-  [Outcome.ClickUpTermsViolation]:
-    "Requests content or actions that violate the configured ClickUp tenant policy.",
+  [Outcome.Abuse]: "Requests content or actions that violate the tenant's acceptable-use policy.",
   [Outcome.TraditionalAiAbuse]:
     "Requests unsafe AI assistance outside the concrete security outcome classes.",
 } as const satisfies Readonly<Record<KnownHarmfulOutcome, string>>;
