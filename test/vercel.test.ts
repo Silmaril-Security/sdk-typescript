@@ -11,7 +11,7 @@ interface ClassifyCall {
 }
 
 function makeFirewall(
-  scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number }>,
+  verdicts: Array<{ action: "allow" | "block" }>,
 ): { firewall: Firewall; calls: ClassifyCall[] } {
   const calls: ClassifyCall[] = [];
   const firewall = new Firewall({
@@ -21,12 +21,10 @@ function makeFirewall(
   let i = 0;
   firewall.classify = vi.fn(async (text, options) => {
     calls.push({ text, hook: options?.hook, toolName: options?.toolName });
-    const r = scores[Math.min(i, scores.length - 1)];
+    const r = verdicts[Math.min(i, verdicts.length - 1)];
     i++;
     return Object.freeze({
-      prediction: r!.prediction,
-      score: r!.score,
-      threshold: r!.threshold ?? 0.5,
+      action: r!.action,
       mode: options?.mode ?? firewall.mode ?? "block",
     });
   }) as typeof firewall.classify;
@@ -35,7 +33,7 @@ function makeFirewall(
 
 describe("Vercel middleware — wrapGenerate", () => {
   it("classifies the prompt before calling doGenerate (benign passes)", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "response text" }));
     const result = (await middleware.wrapGenerate({
@@ -50,7 +48,7 @@ describe("Vercel middleware — wrapGenerate", () => {
   });
 
   it("classifies only the last user message in multi-turn history", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "ok" }));
     await middleware.wrapGenerate({
@@ -70,7 +68,7 @@ describe("Vercel middleware — wrapGenerate", () => {
   });
 
   it("skips classification entirely when the prompt has no user message", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "ok" }));
     const result = (await middleware.wrapGenerate({
@@ -83,7 +81,7 @@ describe("Vercel middleware — wrapGenerate", () => {
   });
 
   it("skips tool messages in history and classifies only the new user turn", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "ok" }));
     await middleware.wrapGenerate({
@@ -100,7 +98,7 @@ describe("Vercel middleware — wrapGenerate", () => {
   });
 
   it("blocks malicious input before calling doGenerate", async () => {
-    const { firewall } = makeFirewall([{ prediction: "MALICIOUS", score: 0.98 }]);
+    const { firewall } = makeFirewall([{ action: "block" }]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "never" }));
     await expect(
@@ -114,8 +112,8 @@ describe("Vercel middleware — wrapGenerate", () => {
 
   it("scanOutput blocks on malicious model output", async () => {
     const { firewall } = makeFirewall([
-      { prediction: "BENIGN", score: 0.1 },
-      { prediction: "MALICIOUS", score: 0.9 },
+      { action: "allow" },
+      { action: "block" },
     ]);
     const middleware = createMiddleware(firewall, { scanOutput: true });
     const doGenerate = vi.fn(async () => ({ text: "malicious completion" }));
@@ -129,7 +127,7 @@ describe("Vercel middleware — wrapGenerate", () => {
   });
 
   it("skips input scan when scanInput: false", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "MALICIOUS", score: 0.99 }]);
+    const { firewall, calls } = makeFirewall([{ action: "block" }]);
     const middleware = createMiddleware(firewall, { scanInput: false, scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "ok" }));
     const result = (await middleware.wrapGenerate({
@@ -141,7 +139,7 @@ describe("Vercel middleware — wrapGenerate", () => {
   });
 
   it("onBlocked callback fires before the exception propagates", async () => {
-    const { firewall } = makeFirewall([{ prediction: "MALICIOUS", score: 0.98 }]);
+    const { firewall } = makeFirewall([{ action: "block" }]);
     const onBlocked = vi.fn();
     const middleware = createMiddleware(firewall, { onBlocked });
     const doGenerate = vi.fn(async () => ({ text: "" }));
@@ -155,16 +153,14 @@ describe("Vercel middleware — wrapGenerate", () => {
     expect(onBlocked.mock.calls[0]![0]).toBeInstanceOf(PromptBlockedException);
   });
 
-  it("uses backend prediction even when score is below threshold", async () => {
+  it("blocks generation on a block decision", async () => {
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
     });
     firewall.classify = vi.fn(async () =>
       Object.freeze({
-        prediction: "MALICIOUS" as const,
-        score: 0.1,
-        threshold: 0.9,
+        action: "block" as const,
         mode: "block" as const,
       }),
     ) as typeof firewall.classify;
@@ -187,9 +183,8 @@ describe("Vercel middleware — governance", () => {
     });
     firewall.classify = vi.fn(async () =>
       Object.freeze({
-        prediction: "BENIGN" as const,
-        score: 0.1,
-        threshold: 0.5,
+        action: "block" as const,
+        source: "governance",
         mode,
         governance: {
           action: "block" as const,
@@ -226,7 +221,7 @@ describe("Vercel middleware — governance", () => {
 
 describe("Vercel middleware — auto tool detection", () => {
   it("classifies tool-result parts with tool_response hook and auto-detected toolName", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "analysis done" }));
     await middleware.wrapGenerate({
@@ -257,8 +252,8 @@ describe("Vercel middleware — auto tool detection", () => {
 
   it("classifies tool-call args from doGenerate result with tool_call hook and auto-detected toolName", async () => {
     const { firewall, calls } = makeFirewall([
-      { prediction: "BENIGN", score: 0.1 },
-      { prediction: "BENIGN", score: 0.1 },
+      { action: "allow" },
+      { action: "allow" },
     ]);
     const middleware = createMiddleware(firewall, { scanToolCalls: true });
     const doGenerate = vi.fn(async () => ({
@@ -279,8 +274,8 @@ describe("Vercel middleware — auto tool detection", () => {
 
   it("blocks malicious tool-call args before Vercel runs the tool", async () => {
     const { firewall } = makeFirewall([
-      { prediction: "BENIGN", score: 0.1 },
-      { prediction: "MALICIOUS", score: 0.95 },
+      { action: "allow" },
+      { action: "block" },
     ]);
     const middleware = createMiddleware(firewall, { scanToolCalls: true });
     const doGenerate = vi.fn(async () => ({
@@ -303,7 +298,7 @@ describe("Vercel middleware — auto tool detection", () => {
   });
 
   it("blocks malicious tool-result before the next LLM call", async () => {
-    const { firewall } = makeFirewall([{ prediction: "MALICIOUS", score: 0.9 }]);
+    const { firewall } = makeFirewall([{ action: "block" }]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "ok" }));
     await expect(
@@ -338,8 +333,8 @@ describe("Vercel middleware — auto tool detection", () => {
 
   it("handles multiple tool-result parts from parallel tool calls", async () => {
     const { firewall, calls } = makeFirewall([
-      { prediction: "BENIGN", score: 0.1 },
-      { prediction: "BENIGN", score: 0.1 },
+      { action: "allow" },
+      { action: "allow" },
     ]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "done" }));
@@ -368,12 +363,12 @@ describe("Vercel middleware — auto tool detection", () => {
 describe("Vercel middleware — onClassify callback", () => {
   it("fires for every classify call with correct event fields", async () => {
     const { firewall } = makeFirewall([
-      { prediction: "MALICIOUS", score: 0.95 },
+      { action: "block" },
     ]);
-    const events: Array<{ hook: string; toolName: string | undefined; blocked: boolean; score: number }> = [];
+    const events: Array<{ hook: string; toolName: string | undefined; blocked: boolean; action: string }> = [];
     const middleware = createMiddleware(firewall, {
       onClassify: (ev) => {
-        events.push({ hook: ev.hook, toolName: ev.toolName, blocked: ev.blocked, score: ev.result.score });
+        events.push({ hook: ev.hook, toolName: ev.toolName, blocked: ev.blocked, action: ev.result.action });
       },
     });
     const doGenerate = vi.fn(async () => ({ text: "ok" }));
@@ -392,17 +387,17 @@ describe("Vercel middleware — onClassify callback", () => {
         doGenerate,
       });
     } catch {
-      // expected: tool_response is MALICIOUS and blocks
+      // expected: tool_response is blocked
     }
     expect(events).toHaveLength(1);
     expect(events[0]!.hook).toBe(HookLabel.TOOL_RESPONSE);
     expect(events[0]!.toolName).toBe("readFile");
     expect(events[0]!.blocked).toBe(true);
-    expect(events[0]!.score).toBe(0.95);
+    expect(events[0]!.action).toBe("block");
   });
 
   it("fires for passing calls too, not just blocked ones", async () => {
-    const { firewall } = makeFirewall([{ prediction: "BENIGN", score: 0.02 }]);
+    const { firewall } = makeFirewall([{ action: "allow" }]);
     const events: Array<{ hook: string; blocked: boolean }> = [];
     const middleware = createMiddleware(firewall, {
       scanOutput: false,
@@ -420,7 +415,7 @@ describe("Vercel middleware — onClassify callback", () => {
 
 describe("Vercel middleware — wrapStream", () => {
   it("passes benign stream through unchanged when scanOutput: false", async () => {
-    const { firewall } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall } = makeFirewall([{ action: "allow" }]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const stream = new ReadableStream({
       start(controller): void {
@@ -448,8 +443,8 @@ describe("Vercel middleware — wrapStream", () => {
 
   it("buffers deltas and emits error part on malicious output when scanOutput: true", async () => {
     const { firewall } = makeFirewall([
-      { prediction: "BENIGN", score: 0.1 },
-      { prediction: "MALICIOUS", score: 0.95 },
+      { action: "allow" },
+      { action: "block" },
     ]);
     const middleware = createMiddleware(firewall, { scanOutput: true });
     const stream = new ReadableStream({
@@ -480,7 +475,7 @@ describe("Vercel middleware — wrapStream", () => {
   });
 
   it("blocks malicious input stream before calling doStream", async () => {
-    const { firewall } = makeFirewall([{ prediction: "MALICIOUS", score: 0.99 }]);
+    const { firewall } = makeFirewall([{ action: "block" }]);
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doStream = vi.fn();
     await expect(
@@ -495,7 +490,7 @@ describe("Vercel middleware — wrapStream", () => {
 
 describe("Vercel middleware — shadow mode", () => {
   function makeShadowFirewall(
-    scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number }>,
+    verdicts: Array<{ action: "allow" | "block" }>,
     shadowMode: boolean | undefined,
   ): { firewall: Firewall; calls: ClassifyCall[] } {
     const calls: ClassifyCall[] = [];
@@ -507,12 +502,10 @@ describe("Vercel middleware — shadow mode", () => {
     let i = 0;
     firewall.classify = vi.fn(async (text, options) => {
       calls.push({ text, hook: options?.hook, toolName: options?.toolName });
-      const r = scores[Math.min(i, scores.length - 1)];
+      const r = verdicts[Math.min(i, verdicts.length - 1)];
       i++;
       return Object.freeze({
-        prediction: r!.prediction,
-        score: r!.score,
-        threshold: r!.threshold ?? 0.5,
+        action: r!.action,
         mode: options?.mode ?? firewall.mode ?? "block",
       });
     }) as typeof firewall.classify;
@@ -520,7 +513,7 @@ describe("Vercel middleware — shadow mode", () => {
   }
 
   it("does not throw on block when firewall.shadowMode is true", async () => {
-    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.97 }], true);
+    const { firewall } = makeShadowFirewall([{ action: "block" }], true);
     const events: Array<{ blocked: boolean; shadowMode: boolean }> = [];
     const onBlocked = vi.fn();
     const middleware = createMiddleware(firewall, {
@@ -539,11 +532,9 @@ describe("Vercel middleware — shadow mode", () => {
   });
 
   it("legacy mode-less responses cannot turn Shadow middleware into Block", async () => {
-    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.97 }], true);
+    const { firewall } = makeShadowFirewall([{ action: "block" }], true);
     firewall.classify = vi.fn(async () => Object.freeze({
-      prediction: "MALICIOUS" as const,
-      score: 0.97,
-      threshold: 0.5,
+      action: "block" as const,
     })) as typeof firewall.classify;
     const middleware = createMiddleware(firewall, { scanOutput: false });
     const doGenerate = vi.fn(async () => ({ text: "preserved" }));
@@ -556,7 +547,7 @@ describe("Vercel middleware — shadow mode", () => {
   });
 
   it("middleware shadowMode: true overrides firewall shadowMode: false", async () => {
-    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.97 }], false);
+    const { firewall } = makeShadowFirewall([{ action: "block" }], false);
     const events: Array<{ blocked: boolean; shadowMode: boolean }> = [];
     const middleware = createMiddleware(firewall, {
       scanOutput: false,
@@ -574,13 +565,11 @@ describe("Vercel middleware — shadow mode", () => {
 
   it("effective warn mode preserves generation and is exposed on events", async () => {
     const { firewall } = makeShadowFirewall(
-      [{ prediction: "MALICIOUS", score: 0.97 }],
+      [{ action: "block" }],
       undefined,
     );
     firewall.classify = vi.fn(async () => Object.freeze({
-      prediction: "MALICIOUS" as const,
-      score: 0.97,
-      threshold: 0.5,
+      action: "block" as const,
       mode: "warn" as const,
     })) as typeof firewall.classify;
     const events: Array<{ mode: string; shadowMode: boolean }> = [];
@@ -597,7 +586,7 @@ describe("Vercel middleware — shadow mode", () => {
   });
 
   it("middleware shadowMode: false overrides firewall shadowMode: true (enforce)", async () => {
-    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.97 }], true);
+    const { firewall } = makeShadowFirewall([{ action: "block" }], true);
     const events: Array<{ blocked: boolean; shadowMode: boolean }> = [];
     const middleware = createMiddleware(firewall, {
       shadowMode: false,
@@ -615,7 +604,7 @@ describe("Vercel middleware — shadow mode", () => {
   });
 
   it("onClassify sees shadowMode: false by default (no flag set anywhere)", async () => {
-    const { firewall } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall } = makeFirewall([{ action: "allow" }]);
     const events: Array<{ shadowMode: boolean }> = [];
     const middleware = createMiddleware(firewall, {
       scanOutput: false,
@@ -631,8 +620,8 @@ describe("Vercel middleware — shadow mode", () => {
   it("streams malicious output through untouched in shadow mode with scanOutput", async () => {
     const { firewall } = makeShadowFirewall(
       [
-        { prediction: "BENIGN", score: 0.1 }, // user_input
-        { prediction: "MALICIOUS", score: 0.9 }, // llm_output
+        { action: "allow" }, // user_input
+        { action: "block" }, // llm_output
       ],
       true,
     );

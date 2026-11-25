@@ -21,7 +21,9 @@ const result = await fw.classify("What is the capital of France?", {
 });
 
 console.log({
-  prediction: result.prediction,
-  score: result.score,
-  threshold: result.threshold,
+  action: result.action,
+  source: result.source,
+  confidence: result.confidence,
+  severity: result.severity,
+  outcome: result.outcome,
 });

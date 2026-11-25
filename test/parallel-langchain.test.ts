@@ -40,7 +40,7 @@ describe("LangChain adapter defaults", () => {
 
 describe("LangChain adapter with parallel", () => {
   it("joins the input check when the model ends", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     const handler = await handlerFor(held, { parallel: true });
 
     await handler.handleChatModelStart({}, USER, "model");
@@ -55,7 +55,7 @@ describe("LangChain adapter with parallel", () => {
   });
 
   it("raises a block at the next hook once it has landed", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     const handler = await handlerFor(held, { parallel: true });
 
@@ -68,7 +68,7 @@ describe("LangChain adapter with parallel", () => {
   });
 
   it("still waits for a tool-call verdict", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     const handler = await handlerFor(held, { parallel: true });
 
@@ -78,7 +78,7 @@ describe("LangChain adapter with parallel", () => {
   });
 
   it("joins a tool result before the next tool runs", async () => {
-    const held = heldFirewall(["BENIGN", "MALICIOUS"]);
+    const held = heldFirewall(["allow", "block"]);
     held.release();
     const handler = await handlerFor(held, { parallel: true });
 
@@ -93,7 +93,7 @@ describe("LangChain adapter with parallel", () => {
   });
 
   it("joins a tool result at the next model end and keeps conversation order", async () => {
-    const held = heldFirewall(["BENIGN", "MALICIOUS"]);
+    const held = heldFirewall(["allow", "block"]);
     held.release();
     const handler = await handlerFor(held, { parallel: true });
     const thread = { thread_id: "conversation-1", langgraph_step: 1 };
@@ -127,14 +127,14 @@ describe("LangChain adapter with parallel", () => {
     await settleQueue();
     expect(gated.calls.map((call) => call.text)).toEqual(["question"]);
 
-    gated.calls[0]!.resolve("MALICIOUS");
+    gated.calls[0]!.resolve("block");
     await expect(first).rejects.toMatchObject({ hook: HookLabel.USER_INPUT });
     await expect(second).rejects.toMatchObject({ hook: HookLabel.USER_INPUT });
     expect(gated.calls).toHaveLength(1);
   });
 
   it("keeps raising a landed block until the run ends", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     const handler = await handlerFor(held, { parallel: true });
 
@@ -150,7 +150,7 @@ describe("LangChain adapter with parallel", () => {
   });
 
   it("leaves nothing to join after a failed run", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     const handler = await handlerFor(held, { parallel: true });
 
@@ -183,7 +183,7 @@ describe("LangChain adapter with parallel", () => {
   });
 
   it("withholds a protected model's output for a blocked input", async () => {
-    const held = heldFirewall(["MALICIOUS"]);
+    const held = heldFirewall(["block"]);
     held.release();
     const model = await protectLangChainRunnable(
       held.firewall, new FakeListChatModel({ responses: ["done"] }), { parallel: true },
@@ -195,7 +195,7 @@ describe("LangChain adapter with parallel", () => {
 
 describe("LangChain adapter in shadow mode", () => {
   it("classifies in the background unless failures must surface", async () => {
-    const held = heldFirewall(["MALICIOUS"], { mode: "shadow" });
+    const held = heldFirewall(["block"], { mode: "shadow" });
     const background = await handlerFor(held);
 
     await background.handleChatModelStart({}, USER, "model-1");

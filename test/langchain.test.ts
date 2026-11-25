@@ -9,7 +9,7 @@ it("default tool hooks pass the run ID as correlation metadata", async () => {
   const calls: Array<{ hook?: string; metadata?: unknown }> = [];
   firewall.classify = vi.fn(async (_text, options) => {
     calls.push({ hook: options?.hook, metadata: options?.metadata });
-    return { prediction: "BENIGN", score: 0.1, threshold: 0.5, mode: "block" };
+    return { action: "allow", mode: "block" };
   }) as typeof firewall.classify;
   const handler = await createLangChainHandler(firewall);
   await handler.handleToolStart?.({ name: "search" } as never, "safe", "run-1", undefined, undefined, { thread_id: "conversation-1" });
@@ -20,7 +20,7 @@ it("default tool hooks pass the run ID as correlation metadata", async () => {
 
 it("includeTool false skips default tool hooks", async () => {
   const firewall = new Firewall({ apiKey: "sk", apiUrl: "https://example.com/classify" });
-  const classify = vi.fn(async () => ({ prediction: "MALICIOUS", score: 0.9, threshold: 0.5, mode: "block" }));
+  const classify = vi.fn(async () => ({ action: "block", mode: "block" }));
   firewall.classify = classify as typeof firewall.classify;
   const handler = await createLangChainHandler(firewall, { includeTool: false });
   await handler.handleToolStart?.({ name: "search" } as never, "deny call", "run-1");
@@ -35,7 +35,7 @@ interface ClassifyCall {
 }
 
 function makeFirewall(
-  scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number } | Error>,
+  verdicts: Array<{ action: "allow" | "block" } | Error>,
 ): {
   firewall: Firewall;
   calls: ClassifyCall[];
@@ -48,15 +48,13 @@ function makeFirewall(
   let i = 0;
   firewall.classify = vi.fn(async (text, options) => {
     calls.push({ text, hook: options?.hook, toolName: options?.toolName });
-    const r = scores[Math.min(i, scores.length - 1)];
+    const r = verdicts[Math.min(i, verdicts.length - 1)];
     i++;
     if (r instanceof Error) {
       throw r;
     }
     return Object.freeze({
-      prediction: r!.prediction,
-      score: r!.score,
-      threshold: r!.threshold ?? 0.5,
+      action: r!.action,
       mode: options?.mode ?? firewall.mode ?? "block",
     });
   }) as typeof firewall.classify;
@@ -65,7 +63,7 @@ function makeFirewall(
 
 describe("LangChain adapter — input hooks", () => {
   it("handleChatModelStart classifies with user_input label", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const handler = (await createLangChainHandler(firewall)) as unknown as {
       handleChatModelStart: (
         llm: unknown,
@@ -84,7 +82,7 @@ describe("LangChain adapter — input hooks", () => {
   });
 
   it("handleChatModelStart classifies only the last user message in multi-turn history", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const handler = (await createLangChainHandler(firewall)) as unknown as {
       handleChatModelStart: (
         llm: unknown,
@@ -110,7 +108,7 @@ describe("LangChain adapter — input hooks", () => {
   });
 
   it("handleChatModelStart skips the call entirely when there is no user message", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const handler = (await createLangChainHandler(firewall)) as unknown as {
       handleChatModelStart: (
         llm: unknown,
@@ -127,7 +125,7 @@ describe("LangChain adapter — input hooks", () => {
   });
 
   it("handleChatModelStart skips tool messages in history and only classifies the new user turn", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const handler = (await createLangChainHandler(firewall)) as unknown as {
       handleChatModelStart: (
         llm: unknown,
@@ -150,7 +148,7 @@ describe("LangChain adapter — input hooks", () => {
   });
 
   it("handleToolStart passes raw text with tool_call label and toolName", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const handler = (await createLangChainHandler(firewall, { hooks: ALL_HOOKS })) as unknown as {
       handleToolStart: (
         tool: { name: string },
@@ -164,8 +162,8 @@ describe("LangChain adapter — input hooks", () => {
     expect(calls[0]!.toolName).toBe("read_file");
   });
 
-  it("throws PromptBlockedException when score >= threshold", async () => {
-    const { firewall } = makeFirewall([{ prediction: "MALICIOUS", score: 0.97 }]);
+  it("throws PromptBlockedException on a block decision", async () => {
+    const { firewall } = makeFirewall([{ action: "block" }]);
     const handler = (await createLangChainHandler(firewall)) as unknown as {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
@@ -174,16 +172,14 @@ describe("LangChain adapter — input hooks", () => {
     ).rejects.toBeInstanceOf(PromptBlockedException);
   });
 
-  it("uses backend prediction even when score is below threshold", async () => {
+  it("blocks a tool response on a block decision", async () => {
     const firewall = new Firewall({
       apiKey: "sk-test",
       apiUrl: "https://api.test.invalid/classify",
     });
     firewall.classify = vi.fn(async () =>
       Object.freeze({
-        prediction: "MALICIOUS" as const,
-        score: 0.1,
-        threshold: 0.9,
+        action: "block" as const,
         mode: "block" as const,
       }),
     ) as typeof firewall.classify;
@@ -231,7 +227,7 @@ describe("LangChain adapter — fail-open / fail-closed", () => {
   });
 
   it("always rethrows PromptBlockedException even when failOpen", async () => {
-    const { firewall } = makeFirewall([{ prediction: "MALICIOUS", score: 0.99 }]);
+    const { firewall } = makeFirewall([{ action: "block" }]);
     const handler = (await createLangChainHandler(firewall, { failOpen: true })) as unknown as {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
     };
@@ -249,9 +245,8 @@ describe("LangChain adapter — governance", () => {
     });
     firewall.classify = vi.fn(async (_text, options) =>
       Object.freeze({
-        prediction: "BENIGN" as const,
-        score: 0.1,
-        threshold: 0.5,
+        action,
+        ...(action === "block" ? { source: "governance" } : {}),
         mode: options?.mode ?? "block",
         governance: { action, ruleId: "policy-rule", policyVersion: "v1" },
       }),
@@ -282,7 +277,7 @@ describe("LangChain adapter — governance", () => {
 
 describe("LangChain adapter — disabled hooks", () => {
   it("skips hooks not in the enabled set", async () => {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const handler = (await createLangChainHandler(firewall, {
       hooks: new Set(["on_llm_start"]) as ReadonlySet<"on_llm_start">,
     } as never)) as unknown as {
@@ -305,7 +300,7 @@ describe("LangChain adapter — per-hook disable matrix", () => {
   async function buildWith(
     enabled: string,
   ): Promise<{ firewall: Firewall; calls: ClassifyCall[]; handler: Record<string, (...args: unknown[]) => Promise<void>> }> {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const handler = (await createLangChainHandler(firewall, {
       hooks: new Set([enabled]) as unknown as ReadonlySet<never>,
     } as never)) as unknown as Record<string, (...args: unknown[]) => Promise<void>>;
@@ -361,7 +356,7 @@ describe("LangChain adapter — toolName extraction", () => {
     calls: ClassifyCall[];
     handler: Record<string, (...args: unknown[]) => Promise<void>>;
   }> {
-    const { firewall, calls } = makeFirewall([{ prediction: "BENIGN", score: 0.1 }]);
+    const { firewall, calls } = makeFirewall([{ action: "allow" }]);
     const handler = (await createLangChainHandler(firewall, {
       hooks: ALL_HOOKS,
     })) as unknown as Record<string, (...args: unknown[]) => Promise<void>>;
@@ -416,7 +411,7 @@ describe("LangChain adapter — shadow mode", () => {
   });
 
   function makeShadowFirewall(
-    scores: Array<{ prediction: "BENIGN" | "MALICIOUS"; score: number; threshold?: number } | Error>,
+    verdicts: Array<{ action: "allow" | "block" } | Error>,
     shadowMode: boolean | undefined,
   ): { firewall: Firewall; calls: ClassifyCall[] } {
     const calls: ClassifyCall[] = [];
@@ -428,15 +423,13 @@ describe("LangChain adapter — shadow mode", () => {
     let i = 0;
     firewall.classify = vi.fn(async (text, options) => {
       calls.push({ text, hook: options?.hook, toolName: options?.toolName });
-      const r = scores[Math.min(i, scores.length - 1)];
+      const r = verdicts[Math.min(i, verdicts.length - 1)];
       i++;
       if (r instanceof Error) {
         throw r;
       }
       return Object.freeze({
-        prediction: r!.prediction,
-        score: r!.score,
-        threshold: r!.threshold ?? 0.5,
+        action: r!.action,
         mode: options?.mode ?? firewall.mode ?? "block",
       });
     }) as typeof firewall.classify;
@@ -444,7 +437,7 @@ describe("LangChain adapter — shadow mode", () => {
   }
 
   it("shadow mode suppresses PromptBlockedException and fires onClassify with shadowMode: true", async () => {
-    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.99 }], true);
+    const { firewall } = makeShadowFirewall([{ action: "block" }], true);
     const events: Array<{ blocked: boolean; shadowMode: boolean }> = [];
     const handler = (await createLangChainHandler(firewall, {
       onClassify: (ev) => events.push({ blocked: ev.blocked, shadowMode: ev.shadowMode }),
@@ -457,11 +450,9 @@ describe("LangChain adapter — shadow mode", () => {
   });
 
   it("legacy mode-less responses cannot turn a Shadow adapter into Block", async () => {
-    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.99 }], true);
+    const { firewall } = makeShadowFirewall([{ action: "block" }], true);
     firewall.classify = vi.fn(async () => Object.freeze({
-      prediction: "MALICIOUS" as const,
-      score: 0.99,
-      threshold: 0.5,
+      action: "block" as const,
     })) as typeof firewall.classify;
     const handler = (await createLangChainHandler(firewall)) as unknown as {
       handleLLMStart: (llm: unknown, prompts: string[], runId: string) => Promise<void>;
@@ -472,13 +463,11 @@ describe("LangChain adapter — shadow mode", () => {
 
   it("effective warn mode preserves the host flow and is exposed on events", async () => {
     const { firewall } = makeShadowFirewall(
-      [{ prediction: "MALICIOUS", score: 0.99 }],
+      [{ action: "block" }],
       undefined,
     );
     firewall.classify = vi.fn(async () => Object.freeze({
-      prediction: "MALICIOUS" as const,
-      score: 0.99,
-      threshold: 0.5,
+      action: "block" as const,
       mode: "warn" as const,
     })) as typeof firewall.classify;
     const events: Array<{ mode: string; shadowMode: boolean }> = [];
@@ -501,7 +490,7 @@ describe("LangChain adapter — shadow mode", () => {
   });
 
   it("per-adapter shadowMode: true overrides firewall-level false", async () => {
-    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.99 }], false);
+    const { firewall } = makeShadowFirewall([{ action: "block" }], false);
     const events: Array<{ shadowMode: boolean }> = [];
     const handler = (await createLangChainHandler(firewall, {
       shadowMode: true,
@@ -515,7 +504,7 @@ describe("LangChain adapter — shadow mode", () => {
   });
 
   it("per-adapter shadowMode: false overrides firewall-level true (enforce)", async () => {
-    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.99 }], true);
+    const { firewall } = makeShadowFirewall([{ action: "block" }], true);
     const handler = (await createLangChainHandler(firewall, {
       shadowMode: false,
     })) as unknown as {
@@ -538,7 +527,7 @@ describe("LangChain adapter — shadow mode", () => {
   });
 
   it("onClassify fires for benign decisions too, with blocked: false and the adapter-level shadowMode", async () => {
-    const { firewall } = makeShadowFirewall([{ prediction: "BENIGN", score: 0.01 }], true);
+    const { firewall } = makeShadowFirewall([{ action: "allow" }], true);
     const events: Array<{ blocked: boolean; shadowMode: boolean }> = [];
     const handler = (await createLangChainHandler(firewall, {
       onClassify: (ev) => events.push({ blocked: ev.blocked, shadowMode: ev.shadowMode }),
@@ -552,7 +541,7 @@ describe("LangChain adapter — shadow mode", () => {
 
   it("onClassify callback that throws is swallowed and does not affect enforcement", async () => {
     const loggerCalls: Array<{ message: string }> = [];
-    const { firewall } = makeShadowFirewall([{ prediction: "MALICIOUS", score: 0.99 }], false);
+    const { firewall } = makeShadowFirewall([{ action: "block" }], false);
     const handler = (await createLangChainHandler(firewall, {
       logger: (message) => loggerCalls.push({ message }),
       onClassify: () => {

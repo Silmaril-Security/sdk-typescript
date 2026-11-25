@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Firewall } from "../src/firewall.js";
+import { allowed, blocked, decisions } from "./wire.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -8,12 +9,10 @@ afterEach(() => {
 });
 
 describe("governance response evidence", () => {
-  it("preserves full evidence for a benign governance block through classify", async () => {
+  it("preserves full evidence for a governance block through classify", async () => {
     globalThis.fetch = vi.fn(async () =>
-      new Response(JSON.stringify({
-        prediction: "BENIGN",
-        score: 0.1,
-        threshold: 0.5,
+      new Response(JSON.stringify(decisions(blocked({
+        source: "governance",
         governance: {
           action: "block",
           rule_id: "block-unapproved-mcp",
@@ -26,7 +25,7 @@ describe("governance response evidence", () => {
           identity_revision: "\u00a0\ufeff\u0085",
           reason: "\u001cidentity_unresolved\u3000",
         },
-      })),
+      })))),
     );
     const fw = new Firewall({
       apiKey: "sk-test",
@@ -35,7 +34,7 @@ describe("governance response evidence", () => {
 
     const result = await fw.classify("synthetic");
 
-    expect(result.prediction).toBe("BENIGN");
+    expect(result).toMatchObject({ action: "block", source: "governance" });
     expect(result.governance).toEqual({
       action: "block",
       ruleId: "block-unapproved-mcp",
@@ -55,12 +54,9 @@ describe("governance response evidence", () => {
 
   it("preserves unknown reasons and nullable optional evidence through classifyBatch", async () => {
     globalThis.fetch = vi.fn(async () =>
-      new Response(JSON.stringify({
-        predictions: [
-          {
-            prediction: "BENIGN",
-            score: 0.1,
-            threshold: 0.5,
+      new Response(JSON.stringify(decisions(
+          blocked({
+            source: "governance",
             governance: {
               action: "block",
               rule_id: "future-rule",
@@ -73,13 +69,10 @@ describe("governance response evidence", () => {
               identity_revision: "identity-revision-43",
               reason: "future_runtime_reason",
             },
-          },
-          { prediction: "BENIGN", score: 0, threshold: 0.5 },
-          { prediction: "BENIGN", score: 0, threshold: 0.5, governance: null },
-          {
-            prediction: "BENIGN",
-            score: 0,
-            threshold: 0.5,
+          }),
+          { action: "allow" },
+          allowed(),
+          allowed({
             governance: {
               action: "allow",
               rule_id: null,
@@ -88,9 +81,8 @@ describe("governance response evidence", () => {
               identity_revision: null,
               reason: null,
             },
-          },
-        ],
-      })),
+          }),
+      ))),
     );
     const fw = new Firewall({
       apiKey: "sk-test",
@@ -192,20 +184,15 @@ describe("governance response evidence", () => {
           error: /reason must be a non-empty string when provided/,
         },
       ])("rejects $name", async ({ evidence, error }) => {
-        const prediction = {
-          prediction: "BENIGN",
-          score: 0.1,
-          threshold: 0.5,
-          governance: {
-            action: "block",
-            policy_version: "policy-v6",
-            ...evidence,
-          },
-        };
         const fetch = vi.fn(async () =>
-          new Response(JSON.stringify(
-            method === "classify" ? prediction : { predictions: [prediction] },
-          )),
+          new Response(JSON.stringify(decisions(blocked({
+            source: "governance",
+            governance: {
+              action: "block",
+              policy_version: "policy-v6",
+              ...evidence,
+            },
+          })))),
         );
         globalThis.fetch = fetch;
         const fw = new Firewall({
@@ -265,15 +252,11 @@ it("sends the resource read by policy while leaving caller identity in metadata"
     calls.push(body);
     const denied = JSON.stringify(body.resource)
       === JSON.stringify({ kind: "plugin", id: "blocked-plugin" });
-    return new Response(JSON.stringify({
-      prediction: "BENIGN",
-      score: 0.1,
-      threshold: 0.5,
-      governance: {
-        action: denied ? "block" : "allow",
-        policy_version: "fixture",
-      },
-    }));
+    const action = denied ? "block" : "allow";
+    return new Response(JSON.stringify(decisions({
+      ...(denied ? blocked({ source: "governance" }) : allowed()),
+      governance: { action, policy_version: "fixture" },
+    })));
   });
   const fw = new Firewall({
     apiKey: "sk-test",
@@ -285,7 +268,7 @@ it("sends the resource read by policy while leaving caller identity in metadata"
       resource: { kind: "plugin", id: "blocked-plugin" },
     },
   });
-  expect(result.governance?.action).toBe("block");
+  expect(result).toMatchObject({ action: "block", governance: { action: "block" } });
   expect(calls[0]).not.toHaveProperty("agent");
   const spoofed = await fw.classify("synthetic", {
     metadata: {
@@ -296,20 +279,14 @@ it("sends the resource read by policy while leaving caller identity in metadata"
       },
     },
   });
-  expect(spoofed.governance?.action).toBe("allow");
+  expect(spoofed).toMatchObject({ action: "allow", governance: { action: "allow" } });
 });
 
 it("retains null positions in canonical batch resources", async () => {
   globalThis.fetch = vi.fn(async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect(body.resources).toEqual([null, { kind: "plugin", id: "blocked-plugin" }, null]);
-    return new Response(JSON.stringify({
-      predictions: [0, 1, 2].map(() => ({
-        prediction: "BENIGN",
-        score: 0.1,
-        threshold: 0.5,
-      })),
-    }));
+    return new Response(JSON.stringify(decisions(allowed(), allowed(), allowed())));
   });
   const fw = new Firewall({
     apiKey: "sk-test",

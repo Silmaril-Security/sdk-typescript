@@ -19,16 +19,14 @@ interface StreamPart {
 }
 
 function makeFirewall(
-  decide: (text: string) => "BENIGN" | "MALICIOUS" = () => "BENIGN",
+  decide: (text: string) => "allow" | "block" = () => "allow",
 ) {
   const firewall = new Firewall({
     apiKey: "sk",
     apiUrl: "https://example.com/classify",
   });
   firewall.classify = vi.fn(async (text) => ({
-    prediction: decide(text),
-    score: decide(text) === "MALICIOUS" ? 0.9 : 0.1,
-    threshold: 0.5,
+    action: decide(text),
     mode: "block",
   })) as typeof firewall.classify;
   return firewall;
@@ -191,9 +189,7 @@ describe("Vercel AI SDK 7 middleware", () => {
     let release!: () => void;
     firewall.classify = vi.fn(() => new Promise((resolve) => {
       release = () => resolve({
-        prediction: "BENIGN",
-        score: 0.1,
-        threshold: 0.5,
+        action: "allow",
         mode: "block",
       });
     })) as typeof firewall.classify;
@@ -222,7 +218,7 @@ describe("Vercel AI SDK 7 middleware", () => {
   });
 
   it("replaces blocked text with one valid error part and retains finish metadata", async () => {
-    const firewall = makeFirewall((text) => text.includes("deny") ? "MALICIOUS" : "BENIGN");
+    const firewall = makeFirewall((text) => text.includes("deny") ? "block" : "allow");
     const middleware = createMiddlewareV4(firewall, { scanOutput: true });
     const finish = {
       type: "finish",
@@ -251,7 +247,7 @@ describe("Vercel AI SDK 7 middleware", () => {
   });
 
   it("buffers tool-input deltas, correlates the final call by ID, and never leaks blocked arguments", async () => {
-    const firewall = makeFirewall((text) => text.includes("deny") ? "MALICIOUS" : "BENIGN");
+    const firewall = makeFirewall((text) => text.includes("deny") ? "block" : "allow");
     const middleware = createMiddlewareV4(firewall, { scanToolCalls: true });
     const finish = {
       type: "finish",
@@ -288,7 +284,7 @@ describe("Vercel AI SDK 7 middleware", () => {
   });
 
   it("reclassifies changed final tool input and withholds a newly malicious call", async () => {
-    const firewall = makeFirewall((text) => text.includes("deny") ? "MALICIOUS" : "BENIGN");
+    const firewall = makeFirewall((text) => text.includes("deny") ? "block" : "allow");
     const middleware = createMiddlewareV4(firewall, { scanToolCalls: true });
     const finalCall = {
       type: "tool-call",

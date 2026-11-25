@@ -57,12 +57,7 @@ const firewall = new Firewall({
 });
 firewall.classify = async (text, options) => {
   calls.push({ text, hook: options?.hook, toolName: options?.toolName });
-  return {
-    prediction: "BENIGN",
-    score: 0.1,
-    threshold: 0.5,
-    mode: "block",
-  };
+  return { action: "allow", mode: "block" };
 };
 
 const wrapped = wrapLanguageModel({
@@ -109,12 +104,7 @@ async function exerciseChangedFinalInput(finalInput) {
   });
   streamFirewall.classify = async (text, options) => {
     streamCalls.push({ text, hook: options?.hook, toolName: options?.toolName });
-    return {
-      prediction: text.includes("deny") ? "MALICIOUS" : "BENIGN",
-      score: text.includes("deny") ? 0.9 : 0.1,
-      threshold: 0.5,
-      mode: "block",
-    };
+    return { action: text.includes("deny") ? "block" : "allow", mode: "block" };
   };
   const streamModel = new MockLanguageModelV4({
     doStream: async () => ({

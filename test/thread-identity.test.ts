@@ -19,7 +19,7 @@ function recordingFirewall() {
   firewall.classify = vi.fn(async (text, options) => {
     calls.push({ text, hook: options?.hook, conversationId: options?.metadata?.conversationId,
       runId: (options?.metadata?.langgraph as Record<string, unknown> | undefined)?.run_id });
-    return { prediction: "BENIGN", score: 0, threshold: 0.5, mode: "block" };
+    return { action: "allow", mode: "block" };
   }) as typeof firewall.classify;
   return { firewall, calls };
 }
@@ -188,7 +188,7 @@ describe("callback identity lifecycle", () => {
     const classify = firewall.classify.bind(firewall);
     firewall.classify = vi.fn(async (text, options) => {
       const result = await classify(text, options);
-      return { ...result, prediction: text === "deny" ? "MALICIOUS" : "BENIGN" };
+      return { ...result, action: text === "deny" ? "block" : "allow" };
     }) as typeof firewall.classify;
     const handler = await createLangChainHandler(firewall);
     await expect(handler.handleToolStart!({ name: "search" } as never, "deny", "run", undefined, [], { thread_id: "blocked" })).rejects.toThrow();
@@ -273,8 +273,8 @@ describe("real LangChain and LangGraph execution", () => {
   it("preserves a real output denial and clears native tracer maps after failure", async () => {
     const { firewall } = recordingFirewall();
     firewall.classify = vi.fn(async (_text, options) => ({
-      prediction: options?.hook === HookLabel.LLM_OUTPUT ? "MALICIOUS" : "BENIGN",
-      score: 0.9, threshold: 0.5, mode: "block",
+      action: options?.hook === HookLabel.LLM_OUTPUT ? "block" : "allow",
+      mode: "block",
     })) as typeof firewall.classify;
     const handler = await createLangChainHandler(firewall, { hooks: ALL_HOOKS });
     const model = echoModel();

@@ -16,8 +16,6 @@ export interface MalformedInputDetails {
 }
 
 export class FirewallBlockedException extends Error {
-  readonly score: number;
-  readonly threshold: number;
   readonly promptText: string;
   readonly runId: string | undefined;
   readonly hook: HookLabel | undefined;
@@ -26,8 +24,6 @@ export class FirewallBlockedException extends Error {
   readonly result: BlockResult | undefined;
 
   constructor(params: {
-    score: number;
-    threshold: number;
     promptText: string;
     runId?: string;
     hook?: HookLabel;
@@ -37,8 +33,6 @@ export class FirewallBlockedException extends Error {
   }) {
     super(FirewallBlockedException.formatMessage(params));
     this.name = "FirewallBlockedException";
-    this.score = params.score;
-    this.threshold = params.threshold;
     this.promptText = params.promptText;
     this.runId = params.runId;
     this.hook = params.hook;
@@ -49,8 +43,6 @@ export class FirewallBlockedException extends Error {
   }
 
   private static formatMessage(params: {
-    score: number;
-    threshold: number;
     promptText: string;
     result?: BlockResult;
   }): string {
@@ -58,17 +50,8 @@ export class FirewallBlockedException extends Error {
       params.promptText.length > MAX_PROMPT_DISPLAY_LEN
         ? `${params.promptText.slice(0, MAX_PROMPT_DISPLAY_LEN)}...`
         : params.promptText;
-    if (
-      params.result?.prediction !== "MALICIOUS" &&
-      params.result?.governance?.action === "block"
-    ) {
-      return `Request blocked by Silmaril Firewall governance policy: '${truncated}'`;
-    }
-    return (
-      `Request blocked by Silmaril Firewall ` +
-      `(score=${params.score.toFixed(4)}, threshold=${params.threshold.toFixed(4)}): ` +
-      `'${truncated}'`
-    );
+    const decidedBy = params.result?.source === "governance" ? " governance policy" : "";
+    return `Request blocked by Silmaril Firewall${decidedBy}: '${truncated}'`;
   }
 }
 

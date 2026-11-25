@@ -13,8 +13,8 @@ import { createDeepAgentsMiddleware, createProtectedDeepAgent, SAFE_OUTPUT_MESSA
 function firewall(block = true) {
   const fw = new Firewall({ apiKey: "test", apiUrl: "https://unused.invalid/classify" });
   fw.classify = vi.fn(async (text) => ({
-    prediction: block && text.includes("unsafe") ? "MALICIOUS" : "BENIGN",
-    score: block && text.includes("unsafe") ? 0.9 : 0.1, threshold: 0.5, mode: "block",
+    action: block && text.includes("unsafe") ? "block" : "allow",
+    mode: "block",
   })) as typeof fw.classify;
   return fw;
 }

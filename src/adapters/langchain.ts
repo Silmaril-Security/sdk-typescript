@@ -156,7 +156,7 @@ async function buildLangChainHandler(
     runId: string,
     toolName?: string,
   ): void => {
-    const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
+    const blocked = result.action !== "allow";
     const effectiveMode = requestedMode ?? result.mode ?? "block";
     fireOnClassify({
       hook: hookLabel,
@@ -172,8 +172,6 @@ async function buildLangChainHandler(
       return;
     }
     throw new FirewallBlockedException({
-      score: result.score,
-      threshold: result.threshold,
       promptText: text,
       runId,
       hook: hookLabel,

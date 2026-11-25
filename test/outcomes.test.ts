@@ -4,19 +4,13 @@ import { describe, expect, it } from "vitest";
 import {
   HARMFUL_OUTCOMES,
   isHarmfulOutcome,
-  isPrimaryOutcome,
-  normalizeHarmfulOutcomeMap,
-  normalizePrimaryOutcome,
   Outcome,
   OUTCOME_DESCRIPTIONS,
-  PRIMARY_OUTCOMES,
 } from "../src/index.js";
-import { normalizeHarmfulOutcomeCountMap } from "../src/outcomes.js";
 
 describe("outcomes", () => {
-  it("exports ordered primary and harmful outcome taxonomy", () => {
-    expect(PRIMARY_OUTCOMES).toEqual([
-      Outcome.Benign,
+  it("exports the ordered harmful outcome taxonomy", () => {
+    expect(HARMFUL_OUTCOMES).toEqual([
       Outcome.InformationDisclosure,
       Outcome.SecretExposure,
       Outcome.ControlAbuse,
@@ -29,81 +23,24 @@ describe("outcomes", () => {
       Outcome.Abuse,
       Outcome.TraditionalAiAbuse,
     ]);
-    expect(HARMFUL_OUTCOMES).toEqual(PRIMARY_OUTCOMES.slice(1));
-    for (const outcome of PRIMARY_OUTCOMES) {
+    expect(HARMFUL_OUTCOMES).toEqual(Object.values(Outcome));
+    expect(Object.keys(OUTCOME_DESCRIPTIONS)).toEqual(HARMFUL_OUTCOMES);
+    for (const outcome of HARMFUL_OUTCOMES) {
       expect(OUTCOME_DESCRIPTIONS[outcome]).toBeTruthy();
-      expect(isPrimaryOutcome(outcome)).toBe(true);
+      expect(isHarmfulOutcome(outcome)).toBe(true);
     }
   });
 
-  it("validates primary and harmful outcomes", () => {
-    expect(normalizePrimaryOutcome(Outcome.Benign)).toBe(Outcome.Benign);
-    expect(normalizePrimaryOutcome("data_exfiltration")).toBe("data_exfiltration");
+  it("has no benign outcome", () => {
+    expect(Outcome).not.toHaveProperty("Benign");
+    expect(isHarmfulOutcome("benign")).toBe(false);
+    expect(OUTCOME_DESCRIPTIONS).not.toHaveProperty("benign");
+  });
+
+  it("recognizes only known harmful outcomes", () => {
     expect(isHarmfulOutcome(Outcome.SecretExposure)).toBe(true);
-    expect(isHarmfulOutcome(Outcome.Benign)).toBe(false);
-    expect(isPrimaryOutcome(42)).toBe(false);
     expect(isHarmfulOutcome("data_exfiltration")).toBe(false);
-    expect(() => normalizePrimaryOutcome(42)).toThrow(/invalid primary_outcome/);
-  });
-
-  it("normalizes harmful outcome maps", () => {
-    expect(
-      normalizeHarmfulOutcomeMap(
-        {
-          [Outcome.SecretExposure]: 0.9,
-          [Outcome.SystemCompromise]: 0.7,
-        },
-        "outcome_scores",
-      ),
-    ).toEqual({
-      [Outcome.SecretExposure]: 0.9,
-      [Outcome.SystemCompromise]: 0.7,
-    });
-    expect(normalizeHarmfulOutcomeMap({ data_exfiltration: 1 }, "outcome_scores")).toEqual({
-      data_exfiltration: 1,
-    });
-    expect(() =>
-      normalizeHarmfulOutcomeMap({ [Outcome.Benign]: 1 }, "outcome_scores"),
-    ).toThrow(/invalid outcome_scores key/);
-    expect(() =>
-      normalizeHarmfulOutcomeMap({ [Outcome.Benign]: "high" }, "outcome_scores"),
-    ).toThrow(/invalid outcome_scores key/);
-    expect(() =>
-      normalizeHarmfulOutcomeMap({ [Outcome.SecretExposure]: "high" }, "outcome_scores"),
-    ).toThrow(/invalid outcome_scores value/);
-  });
-
-  it.each([-0.1, 1.1, Number.NaN, Number.POSITIVE_INFINITY])(
-    "rejects invalid scores %s without restricting detector counts",
-    (value) => {
-      for (const field of ["outcome_scores", "detector_scores"]) {
-        expect(() => normalizeHarmfulOutcomeMap({ future_outcome: value }, field))
-          .toThrow(`invalid ${field} value`);
-      }
-    },
-  );
-
-  it("normalizes detector count maps as finite non-negative integers", () => {
-    expect(
-      normalizeHarmfulOutcomeCountMap(
-        {
-          [Outcome.SecretExposure]: 0,
-          data_exfiltration: 3,
-        },
-        "detector_counts",
-      ),
-    ).toEqual({
-      [Outcome.SecretExposure]: 0,
-      data_exfiltration: 3,
-    });
-
-    for (const invalidCount of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(() =>
-        normalizeHarmfulOutcomeCountMap(
-          { [Outcome.SecretExposure]: invalidCount },
-          "detector_counts",
-        ),
-      ).toThrow(/invalid detector_counts value/);
-    }
+    expect(isHarmfulOutcome(42)).toBe(false);
+    expect(isHarmfulOutcome(undefined)).toBe(false);
   });
 });

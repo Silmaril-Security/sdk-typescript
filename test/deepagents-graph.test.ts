@@ -15,9 +15,7 @@ import {
 function makeFirewall() {
   const firewall = new Firewall({ apiKey: "sk", apiUrl: "https://example.com/classify" });
   firewall.classify = vi.fn(async (text) => ({
-    prediction: text.includes("deny") ? "MALICIOUS" : "BENIGN",
-    score: text.includes("deny") ? 0.9 : 0.1,
-    threshold: 0.5,
+    action: text.includes("deny") ? "block" : "allow",
     mode: "block",
   })) as typeof firewall.classify;
   return firewall;

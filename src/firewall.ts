@@ -12,11 +12,6 @@ import {
 import { HookLabel } from "./hooks.js";
 import { validateMode } from "./modes.js";
 import {
-  normalizeHarmfulOutcomeCountMap,
-  normalizeHarmfulOutcomeMap,
-  normalizePrimaryOutcome,
-} from "./outcomes.js";
-import {
   DEFAULT_MAX_CONCURRENT,
   DEFAULT_MAX_QUEUED,
   PendingVerdicts,
@@ -26,12 +21,13 @@ import {
   validateLimit,
 } from "./pending.js";
 import { sanitizeText } from "./sanitization.js";
-import { isPythonNonblankString, validateThreshold } from "./validation.js";
+import { isPythonNonblankString } from "./validation.js";
 import type {
   BlockResult,
   ClassifyBatchOptions,
   ClassifyOptions,
   ClassificationMetadata,
+  Confidence,
   FirewallOptions,
   FirewallMode,
   GovernanceContext,
@@ -40,13 +36,16 @@ import type {
   LangChainAdapterOptions,
   LangChainFirewallHandler,
   MiddlewareOptions,
-  Prediction,
   ProtectOptions,
   ReviewLevel,
+  Severity,
 } from "./types.js";
 
-export const SDK_VERSION = "0.11.0";
+export const SDK_VERSION = "1.0.0";
 export const DEFAULT_TIMEOUT_MS = 10_000;
+const VERSION_1_PATH = "/classify";
+const VERSION_2_PATH = "/v2/classify";
+const VERSION_1_FALLBACK_STATUSES: ReadonlySet<number> = new Set([403, 404, 405]);
 const DEFAULT_MAX_RETRIES = 5;
 const MAX_BACKOFF_SECONDS = 30;
 const MAX_ERROR_BODY_BYTES = 1 << 16;
@@ -77,22 +76,23 @@ interface BatchClassifyPayload {
   resources?: readonly (Record<string, string> | null)[];
 }
 
-interface SingleClassifyResponse {
-  prediction: Prediction;
-  score?: unknown;
-  threshold?: unknown;
-  review?: unknown;
-  mode?: unknown;
-  primary_outcome?: unknown;
-  outcome_scores?: unknown;
-  detector_scores?: unknown;
-  detector_counts?: unknown;
-  governance?: unknown;
+interface ClassifyEndpoints {
+  readonly version1: string;
+  readonly version2: string;
 }
 
-interface BatchClassifyResponse {
-  predictions: readonly SingleClassifyResponse[];
-  review?: unknown;
+interface WireDecisions {
+  readonly results: unknown;
+  readonly modes: readonly unknown[];
+}
+
+function classifyEndpoints(apiUrl: string): ClassifyEndpoints {
+  const endpoint = (path: string): string => {
+    const url = new URL(apiUrl);
+    url.pathname = url.pathname.replace(/\/$/, "").replace(/\/(?:v2\/)?classify$/, "") + path;
+    return url.href;
+  };
+  return { version1: endpoint(VERSION_1_PATH), version2: endpoint(VERSION_2_PATH) };
 }
 
 function validateReview(value: unknown, name: string): ReviewLevel | undefined {
@@ -120,10 +120,6 @@ function verifyReviewAcknowledgement(
   }
 }
 
-function reviewAcknowledgementFromResponse(response: unknown): unknown {
-  return isRecord(response) ? response.review : undefined;
-}
-
 function resolveMode(value: unknown, requestedMode?: FirewallMode): FirewallMode | undefined {
   let responseMode: FirewallMode | undefined;
   if (value === "shadow" || value === "warn" || value === "block") {
@@ -142,65 +138,104 @@ function legacyMode(shadowMode: boolean | undefined): FirewallMode | undefined {
   return shadowMode === undefined ? undefined : shadowMode ? "shadow" : "block";
 }
 
-function blockResultFromResponse(
-  data: SingleClassifyResponse,
+function surfaced<K extends string, V extends string = string>(
+  key: K,
+  value: unknown,
+): { readonly [P in K]?: V } {
+  return typeof value === "string" ? ({ [key]: value } as { readonly [P in K]: V }) : {};
+}
+
+function blockResultFromDecision(
+  decision: unknown,
+  mode: FirewallMode | undefined,
+  review: ReviewLevel | undefined,
+): BlockResult {
+  if (!isRecord(decision) || typeof decision.action !== "string") {
+    throw new Error("Firewall: response result action must be a string");
+  }
+  return Object.freeze({
+    action: decision.action === "allow" ? "allow" : "block",
+    ...surfaced("source", decision.source),
+    ...surfaced<"confidence", Confidence>("confidence", decision.confidence),
+    ...surfaced<"severity", Severity>("severity", decision.severity),
+    ...surfaced("outcome", decision.outcome),
+    ...(decision.governance === undefined || decision.governance === null
+      ? {}
+      : { governance: governanceDecisionFromResponse(decision.governance) }),
+    ...surfaced("modelId", decision.model_id),
+    ...(review === undefined ? {} : { review }),
+    ...(mode === undefined ? {} : { mode }),
+  });
+}
+
+export function blockResultsFromResponse(
+  body: unknown,
+  inputCount: number,
   requestedMode?: FirewallMode,
   requestedReview?: ReviewLevel,
-): BlockResult {
-  if (data.prediction !== "BENIGN" && data.prediction !== "MALICIOUS") {
+): BlockResult[] {
+  verifyReviewAcknowledgement(isRecord(body) ? body.review : undefined, requestedReview);
+  const { results, modes } = wireDecisions(body);
+  if (!Array.isArray(results)) {
+    throw new Error("Firewall: response results must be an array");
+  }
+  if (results.length !== inputCount) {
+    throw new Error(
+      `Firewall: response results length ${results.length} does not match submitted texts length ${inputCount}`,
+    );
+  }
+  return results.map((decision, index) =>
+    blockResultFromDecision(decision, resolveMode(modes[index], requestedMode), requestedReview)
+  );
+}
+
+function wireDecisions(body: unknown): WireDecisions {
+  return isRecord(body) && "results" in body
+    ? { results: body.results, modes: [] }
+    : {
+        results: adaptVersion1Response(body).results,
+        modes: version1Predictions(body).map((prediction) => prediction.mode),
+      };
+}
+
+function version1Predictions(body: unknown): readonly Record<string, unknown>[] {
+  const predictions: unknown = isRecord(body) && "predictions" in body ? body.predictions : [body];
+  if (!Array.isArray(predictions)) {
+    throw new Error("Firewall: response predictions must be an array");
+  }
+  if (!predictions.every(isRecord)) {
+    throw new Error("Firewall: response prediction must be an object");
+  }
+  return predictions;
+}
+
+function adaptVersion1Prediction(prediction: Record<string, unknown>): Record<string, unknown> {
+  if (prediction.prediction !== "BENIGN" && prediction.prediction !== "MALICIOUS") {
     throw new Error("Firewall: response prediction must be BENIGN or MALICIOUS");
   }
-  const result: {
-    prediction: Prediction;
-    score: number;
-    threshold: number;
-    review?: ReviewLevel;
-    mode?: FirewallMode;
-    primaryOutcome?: NonNullable<BlockResult["primaryOutcome"]>;
-    outcomeScores?: NonNullable<BlockResult["outcomeScores"]>;
-    detectorScores?: NonNullable<BlockResult["detectorScores"]>;
-    detectorCounts?: NonNullable<BlockResult["detectorCounts"]>;
-    governance?: GovernanceDecision;
-  } = {
-    prediction: data.prediction,
-    score: validateThreshold("response score", data.score),
-    threshold: validateThreshold("response threshold", data.threshold),
+  const blocks = prediction.prediction === "MALICIOUS"
+    || (isRecord(prediction.governance) && prediction.governance.action === "block");
+  const modelBlocks = blocks
+    && (prediction.model_prediction ?? prediction.prediction) === "MALICIOUS";
+  const hasOutcome = modelBlocks
+    && isRecord(prediction.outcome_scores)
+    && Object.keys(prediction.outcome_scores).length > 0;
+  return {
+    action: blocks ? "block" : "allow",
+    source: modelBlocks ? "model" : blocks ? "governance" : null,
+    confidence: null,
+    severity: null,
+    outcome: hasOutcome ? prediction.primary_outcome ?? null : null,
+    governance: prediction.governance ?? null,
+    model_id: prediction.model_id ?? null,
   };
-  if (requestedReview !== undefined) {
-    result.review = requestedReview;
-  }
-  const mode = resolveMode(data.mode, requestedMode);
-  if (mode !== undefined) {
-    result.mode = mode;
-  }
-  if (data.primary_outcome !== undefined) {
-    result.primaryOutcome = normalizePrimaryOutcome(data.primary_outcome);
-  }
-  if (data.outcome_scores !== undefined) {
-    const outcomeScores = normalizeHarmfulOutcomeMap(data.outcome_scores, "outcome_scores");
-    if (outcomeScores !== undefined) {
-      result.outcomeScores = outcomeScores;
-    }
-  }
-  if (data.detector_scores !== undefined) {
-    const detectorScores = normalizeHarmfulOutcomeMap(data.detector_scores, "detector_scores");
-    if (detectorScores !== undefined) {
-      result.detectorScores = detectorScores;
-    }
-  }
-  if (data.detector_counts !== undefined) {
-    const detectorCounts = normalizeHarmfulOutcomeCountMap(
-      data.detector_counts,
-      "detector_counts",
-    );
-    if (detectorCounts !== undefined) {
-      result.detectorCounts = detectorCounts;
-    }
-  }
-  if (data.governance !== undefined && data.governance !== null) {
-    result.governance = governanceDecisionFromResponse(data.governance);
-  }
-  return Object.freeze(result);
+}
+
+export function adaptVersion1Response(body: unknown): Record<string, unknown> {
+  return {
+    results: version1Predictions(body).map(adaptVersion1Prediction),
+    ...(isRecord(body) && body.review !== undefined ? { review: body.review } : {}),
+  };
 }
 
 function wireCopy<T>(value: T): T {
@@ -530,13 +565,15 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Firewall client for the `/classify` API.
+ * Firewall client for the `/v2/classify` API, falling back to `/classify` on
+ * runtimes that predate it.
  *
- * Instance state is set once in the constructor and never mutated by a request,
- * so one client is safe to share across any number of concurrent `classify()`
- * and `classifyBatch()` promises within a single JavaScript runtime. Each
- * worker thread owns its own client: `Firewall` instances are not transferable
- * across `worker_threads` boundaries.
+ * Configuration is set once in the constructor. The only state a request
+ * changes is the remembered fallback, which moves one way and only selects the
+ * endpoint, so one client is safe to share across any number of concurrent
+ * `classify()` and `classifyBatch()` promises within a single JavaScript
+ * runtime. Each worker thread owns its own client: `Firewall` instances are
+ * not transferable across `worker_threads` boundaries.
  */
 export class Firewall {
   readonly apiKey: string;
@@ -549,6 +586,8 @@ export class Firewall {
   readonly pending: PendingVerdicts;
 
   private readonly headers: Readonly<Record<string, string>>;
+  private readonly endpoints: ClassifyEndpoints;
+  private version1Only = false;
 
   constructor(options: FirewallOptions) {
     if (!options.apiKey) {
@@ -559,6 +598,7 @@ export class Firewall {
     }
     this.apiKey = options.apiKey;
     this.apiUrl = options.apiUrl;
+    this.endpoints = classifyEndpoints(options.apiUrl);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (typeof this.timeoutMs !== "number" || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 0) {
       throw new Error(`Firewall: timeoutMs must be a finite non-negative number, got ${this.timeoutMs}`);
@@ -662,11 +702,8 @@ export class Firewall {
 
   private async enforce(text: string, options: ClassifyOptions): Promise<BlockResult> {
     const result = await this.classify(text, options);
-    const blocked = result.prediction === "MALICIOUS" || result.governance?.action === "block";
-    if (blocked && (result.mode ?? "block") === "block") {
+    if (result.action !== "allow" && (result.mode ?? "block") === "block") {
       throw new FirewallBlockedException({
-        score: result.score,
-        threshold: result.threshold,
         promptText: text,
         ...(options.hook === undefined ? {} : { hook: options.hook }),
         ...(options.toolName === undefined ? {} : { toolName: options.toolName }),
@@ -736,19 +773,7 @@ export class Firewall {
         context?.resource === undefined ? null : governanceResourceToWire(context.resource),
       );
     }
-    const data = await this.postWithRetry<BatchClassifyResponse>(payload, options.signal);
-    verifyReviewAcknowledgement(reviewAcknowledgementFromResponse(data), requestedReview);
-    if (!Array.isArray(data.predictions)) {
-      throw new Error("Firewall: response predictions must be an array");
-    }
-    if (data.predictions.length !== payload.texts.length) {
-      throw new Error(
-        `Firewall: response predictions length ${data.predictions.length} does not match submitted texts length ${payload.texts.length}`,
-      );
-    }
-    return data.predictions.map((p) =>
-      blockResultFromResponse(p, requestedMode, requestedReview)
-    );
+    return this.decide(payload, requestedMode, requestedReview, options.signal);
   }
 
   asLangChainHandler<THandler = LangChainFirewallHandler>(
@@ -763,22 +788,50 @@ export class Firewall {
     return createMiddleware(this, options);
   }
 
-  private async postWithRetry<T>(
+  private async decide(
     payload: SingleClassifyPayload | BatchClassifyPayload,
+    requestedMode: FirewallMode | undefined,
+    requestedReview: ReviewLevel | undefined,
     callerSignal?: AbortSignal,
-  ): Promise<T> {
-    const maxRetries = retryBudget(DEFAULT_MAX_RETRIES);
+  ): Promise<BlockResult[]> {
     // Cancellation outranks payload serialization, which can itself throw on
     // cyclic metadata or a throwing `toJSON`.
     callerSignal?.throwIfAborted();
-    // Serialize before the first attempt so retries resend the same logical
-    // event even if the caller mutates the objects it passed in.
+    // Serialize before the first attempt so retries and the version 1 fallback
+    // resend the same logical event even if the caller mutates the objects it
+    // passed in.
     const body = JSON.stringify(payload);
+    const decode = (response: unknown): BlockResult[] => blockResultsFromResponse(
+      response,
+      "texts" in payload ? payload.texts.length : 1,
+      requestedMode,
+      requestedReview,
+    );
+    if (!this.version1Only) {
+      try {
+        return decode(await this.postWithRetry(this.endpoints.version2, body, callerSignal));
+      } catch (error) {
+        if (!(error instanceof SilmarilApiError) || !VERSION_1_FALLBACK_STATUSES.has(error.status)) {
+          throw error;
+        }
+      }
+    }
+    const results = decode(await this.postWithRetry(this.endpoints.version1, body, callerSignal));
+    this.version1Only = true;
+    return results;
+  }
+
+  private async postWithRetry(
+    url: string,
+    body: string,
+    callerSignal?: AbortSignal,
+  ): Promise<unknown> {
+    const maxRetries = retryBudget(DEFAULT_MAX_RETRIES);
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       callerSignal?.throwIfAborted();
       const attemptSignal = createAttemptSignal(this.timeoutMs, callerSignal);
       try {
-        const response = await fetch(this.apiUrl, {
+        const response = await fetch(url, {
           method: "POST",
           headers: this.headers,
           body,
@@ -797,8 +850,8 @@ export class Firewall {
               body: errorBody,
             });
           }
-          return await readBodyUnderSignal<T>(
-            () => response.json() as Promise<T>,
+          return await readBodyUnderSignal<unknown>(
+            () => response.json(),
             attemptSignal.signal,
           );
         }
@@ -840,8 +893,6 @@ export class Firewall {
       ...metadataInfo,
       ...(options.governance === undefined ? {} : { governance: options.governance }),
     });
-    const data = await this.postWithRetry<SingleClassifyResponse>(payload, options.signal);
-    verifyReviewAcknowledgement(reviewAcknowledgementFromResponse(data), requestedReview);
-    return blockResultFromResponse(data, requestedMode, requestedReview);
+    return (await this.decide(payload, requestedMode, requestedReview, options.signal))[0]!;
   }
 }

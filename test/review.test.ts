@@ -11,6 +11,7 @@ import {
 import { createDeepAgentsMiddleware } from "../src/adapters/deepagents.js";
 import { createLangChainHandler } from "../src/adapters/langchain.js";
 import { isReviewCompatibilityError } from "../src/exceptions.js";
+import { allowed, decisions } from "./wire.js";
 
 const TEST_API_URL = "https://api.test.invalid/classify";
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -43,9 +44,7 @@ function mockFetch(responses: ReadonlyArray<{ status: number; body: unknown }>):
 
 function single(review?: ReviewLevel): Record<string, unknown> {
   return {
-    prediction: "BENIGN",
-    score: 0.1,
-    threshold: 0.5,
+    ...decisions(allowed()),
     ...(review === undefined ? {} : { review }),
   };
 }
@@ -116,14 +115,14 @@ describe("review selection", () => {
     expect(result.review).toBe("standard");
   });
 
-  it("matches the batch envelope acknowledgement rather than prediction fields", async () => {
+  it("matches the envelope acknowledgement rather than result fields", async () => {
     const calls = mockFetch([{
       status: 200,
       body: {
         review: "deep",
-        predictions: [
-          { ...single(), review: "standard" },
-          single(),
+        results: [
+          allowed({ review: "standard" }),
+          allowed(),
         ],
       },
     }]);
@@ -142,7 +141,7 @@ describe("review selection", () => {
     const calls = mockFetch([
       { status: 200, body: single("standard") },
       { status: 200, body: single("deep") },
-      { status: 200, body: { review: "standard", predictions: [single()] } },
+      { status: 200, body: single("standard") },
     ]);
     const firewall = new Firewall({
       apiKey: "sk-test",
@@ -232,7 +231,7 @@ describe("review selection", () => {
   it("rejects a missing batch envelope acknowledgement without retrying", async () => {
     const calls = mockFetch([{
       status: 200,
-      body: { predictions: [{ ...single(), review: "deep" }] },
+      body: decisions(allowed({ review: "deep" })),
     }]);
     const firewall = new Firewall({ apiKey: "sk-test", apiUrl: TEST_API_URL });
 

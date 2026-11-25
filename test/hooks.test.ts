@@ -122,33 +122,21 @@ describe("prependToolName", () => {
 });
 
 describe("FirewallBlockedException", () => {
-  it("formats message with score and threshold", () => {
-    const err = new FirewallBlockedException({
-      score: 0.98765,
-      threshold: 0.5,
-      promptText: "bad prompt",
-    });
+  it("formats message with the prompt text", () => {
+    const err = new FirewallBlockedException({ promptText: "bad prompt" });
     expect(err.name).toBe("FirewallBlockedException");
-    expect(err.score).toBe(0.98765);
-    expect(err.threshold).toBe(0.5);
-    expect(err.message).toContain("score=0.9877");
-    expect(err.message).toContain("threshold=0.5000");
-    expect(err.message).toContain("'bad prompt'");
+    expect(err.message).toBe("Request blocked by Silmaril Firewall: 'bad prompt'");
   });
 
   it("truncates long prompt text at 100 chars", () => {
     const longText = "a".repeat(200);
-    const err = new FirewallBlockedException({
-      score: 0.9,
-      threshold: 0.5,
-      promptText: longText,
-    });
+    const err = new FirewallBlockedException({ promptText: longText });
     expect(err.message).toContain("a".repeat(100) + "...");
     expect(err.message).not.toContain("a".repeat(101));
   });
 
   it("is instanceof Error and FirewallBlockedException", () => {
-    const err = new FirewallBlockedException({ score: 0.9, threshold: 0.5, promptText: "x" });
+    const err = new FirewallBlockedException({ promptText: "x" });
     expect(err).toBeInstanceOf(Error);
     expect(err).toBeInstanceOf(FirewallBlockedException);
   });

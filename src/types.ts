@@ -2,9 +2,10 @@
 // PROPRIETARY AND CONFIDENTIAL
 
 import type { FirewallHook, HookLabel } from "./hooks.js";
-import type { HarmfulOutcome, PrimaryOutcome } from "./outcomes.js";
 
-export type Prediction = "BENIGN" | "MALICIOUS";
+export type FirewallAction = "allow" | "block";
+export type Confidence = "very_low" | "low" | "medium" | "high" | "very_high";
+export type Severity = "minimal" | "low" | "moderate" | "high" | "critical";
 export type FirewallMode = "shadow" | "warn" | "block";
 export type ReviewLevel = "standard" | "deep";
 export type GovernanceAction = "allow" | "block";
@@ -44,18 +45,17 @@ export interface GovernanceDecision {
 }
 
 export interface BlockResult {
-  readonly prediction: Prediction;
-  readonly score: number;
-  readonly threshold: number;
+  readonly action: FirewallAction;
+  readonly source?: string;
+  readonly confidence?: Confidence;
+  readonly severity?: Severity;
+  readonly outcome?: string;
+  readonly governance?: GovernanceDecision;
+  readonly modelId?: string;
   /** Applied review selection acknowledged by the server; not proof that a judge executed. */
   readonly review?: ReviewLevel;
-  /** Omitted when neither an explicit local override nor the response supplies a mode. */
+  /** Omitted when neither an explicit local override nor a version 1 response supplies a mode. */
   readonly mode?: FirewallMode;
-  readonly primaryOutcome?: PrimaryOutcome;
-  readonly outcomeScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
-  readonly detectorScores?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
-  readonly detectorCounts?: Readonly<Partial<Record<HarmfulOutcome, number>>>;
-  readonly governance?: GovernanceDecision;
 }
 
 export interface FirewallOptions {

@@ -1,10 +1,7 @@
 // Copyright (c) 2024-2025 Silmaril Security Inc. All rights reserved.
 // PROPRIETARY AND CONFIDENTIAL
 
-import { isPythonNonblankString } from "./validation.js";
-
 export const Outcome = {
-  Benign: "benign",
   InformationDisclosure: "information_disclosure",
   SecretExposure: "secret_exposure",
   ControlAbuse: "control_abuse",
@@ -18,28 +15,7 @@ export const Outcome = {
   TraditionalAiAbuse: "traditional_ai_abuse",
 } as const;
 
-declare const unknownOutcomeBrand: unique symbol;
-
-export type KnownPrimaryOutcome = (typeof Outcome)[keyof typeof Outcome];
-export type KnownHarmfulOutcome = Exclude<KnownPrimaryOutcome, typeof Outcome.Benign>;
-export type UnknownOutcome = string & { readonly [unknownOutcomeBrand]: "UnknownOutcome" };
-export type PrimaryOutcome = KnownPrimaryOutcome | UnknownOutcome;
-export type HarmfulOutcome = KnownHarmfulOutcome | UnknownOutcome;
-
-export const PRIMARY_OUTCOMES = [
-  Outcome.Benign,
-  Outcome.InformationDisclosure,
-  Outcome.SecretExposure,
-  Outcome.ControlAbuse,
-  Outcome.SystemCompromise,
-  Outcome.ServiceDisruption,
-  Outcome.CodeGeneration,
-  Outcome.StoryScriptGeneration,
-  Outcome.GameGeneration,
-  Outcome.WebsiteGeneration,
-  Outcome.Abuse,
-  Outcome.TraditionalAiAbuse,
-] as const satisfies readonly PrimaryOutcome[];
+export type KnownHarmfulOutcome = (typeof Outcome)[keyof typeof Outcome];
 
 export const HARMFUL_OUTCOMES = [
   Outcome.InformationDisclosure,
@@ -56,7 +32,6 @@ export const HARMFUL_OUTCOMES = [
 ] as const satisfies readonly KnownHarmfulOutcome[];
 
 export const OUTCOME_DESCRIPTIONS = {
-  [Outcome.Benign]: "No harmful firewall outcome detected.",
   [Outcome.InformationDisclosure]:
     "Exposes private data, documents, internal context, logs, traces, customer data, SQL rows, topology, or similar non-secret sensitive information.",
   [Outcome.SecretExposure]:
@@ -78,76 +53,10 @@ export const OUTCOME_DESCRIPTIONS = {
   [Outcome.Abuse]: "Requests content or actions that violate the tenant's acceptable-use policy.",
   [Outcome.TraditionalAiAbuse]:
     "Requests unsafe AI assistance outside the concrete security outcome classes.",
-} as const satisfies Readonly<Record<KnownPrimaryOutcome, string>>;
+} as const satisfies Readonly<Record<KnownHarmfulOutcome, string>>;
 
-const PRIMARY_OUTCOME_SET = new Set<string>(PRIMARY_OUTCOMES);
 const HARMFUL_OUTCOME_SET = new Set<string>(HARMFUL_OUTCOMES);
-
-export function isPrimaryOutcome(value: unknown): value is KnownPrimaryOutcome {
-  return typeof value === "string" && PRIMARY_OUTCOME_SET.has(value);
-}
 
 export function isHarmfulOutcome(value: unknown): value is KnownHarmfulOutcome {
   return typeof value === "string" && HARMFUL_OUTCOME_SET.has(value);
-}
-
-export function normalizePrimaryOutcome(
-  value: unknown,
-  fieldName = "primary_outcome",
-): PrimaryOutcome {
-  if (!isPythonNonblankString(value)) {
-    throw new Error(`Firewall: invalid ${fieldName} ${JSON.stringify(value)}`);
-  }
-  return isPrimaryOutcome(value) ? value : (value as UnknownOutcome);
-}
-
-export function normalizeHarmfulOutcome(
-  value: unknown,
-  fieldName = "outcome",
-): HarmfulOutcome {
-  if (!isPythonNonblankString(value) || value === Outcome.Benign) {
-    throw new Error(`Firewall: invalid ${fieldName} ${JSON.stringify(value)}`);
-  }
-  return isHarmfulOutcome(value) ? value : (value as UnknownOutcome);
-}
-
-function normalizeNumericOutcomeMap(
-  values: unknown,
-  fieldName: string,
-  accepts: (value: number) => boolean,
-): Readonly<Partial<Record<HarmfulOutcome, number>>> | undefined {
-  if (values === undefined || values === null) {
-    return undefined;
-  }
-  if (typeof values !== "object" || Array.isArray(values)) {
-    throw new Error(`Firewall: invalid ${fieldName} ${JSON.stringify(values)}`);
-  }
-  const out: Partial<Record<HarmfulOutcome, number>> = {};
-  for (const [key, value] of Object.entries(values)) {
-    const normalizedKey = normalizeHarmfulOutcome(key, `${fieldName} key`);
-    if (typeof value !== "number" || !accepts(value)) {
-      throw new Error(`Firewall: invalid ${fieldName} value for ${JSON.stringify(key)}`);
-    }
-    Object.defineProperty(out, normalizedKey, {
-      value,
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-  }
-  return Object.freeze(out);
-}
-
-export function normalizeHarmfulOutcomeMap(
-  values: unknown,
-  fieldName: string,
-): Readonly<Partial<Record<HarmfulOutcome, number>>> | undefined {
-  return normalizeNumericOutcomeMap(values, fieldName, (value) => value >= 0 && value <= 1);
-}
-
-export function normalizeHarmfulOutcomeCountMap(
-  values: unknown,
-  fieldName: string,
-): Readonly<Partial<Record<HarmfulOutcome, number>>> | undefined {
-  return normalizeNumericOutcomeMap(values, fieldName, (value) => Number.isInteger(value) && value >= 0);
 }
