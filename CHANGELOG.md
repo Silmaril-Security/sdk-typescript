@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1
+
+- Pin the Vercel AI SDK install recipes to compatible AI SDK and OpenAI
+  provider versions.
+
 ## 0.11.0
 
 - Breaking: rename the tenant acceptable-use policy outcome to `abuse`.
