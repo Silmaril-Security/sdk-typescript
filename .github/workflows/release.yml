@@ -74,12 +74,12 @@ jobs:
             tag_exists=false
           fi
 
-          if npm view "@silmaril-security/sdk@${version}" version --json >/tmp/npm-version.json 2>/tmp/npm-error.log; then
+          if npm view "@silmaril-security/sdk@${version}" version --json >/dev/null 2>"$RUNNER_TEMP/npm-error.log"; then
             package_exists=true
-          elif grep -q "E404" /tmp/npm-error.log; then
+          elif grep -q "E404" "$RUNNER_TEMP/npm-error.log"; then
             package_exists=false
           else
-            cat /tmp/npm-error.log
+            cat "$RUNNER_TEMP/npm-error.log"
             echo "::error::Unexpected npm response while checking $version."
             exit 1
           fi
@@ -218,6 +218,7 @@ jobs:
             gh release create "$TAG" --verify-tag --title "$TAG" --notes "Release $TAG"
           else
             echo "::error::Could not check GitHub release $TAG."
+            printf '%s\n' "$response" >&2
             exit 1
           fi
 
