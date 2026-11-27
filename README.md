@@ -35,10 +35,10 @@ This SDK is distributed as an npm package.
 npm install @silmaril-security/sdk
 ```
 
-Pin version 0.11.0 for reproducible installs:
+Pin version 0.11.1 for reproducible installs:
 
 ```sh
-npm install @silmaril-security/sdk@0.11.0
+npm install @silmaril-security/sdk@0.11.1
 ```
 
 Requires Node 20 or later.
@@ -56,7 +56,11 @@ existing `adapters/vercel` middleware remains compatible with Vercel AI SDK v5
 and v6:
 
 ```sh
-npm install ai @ai-sdk/openai
+# AI SDK 5
+npm install ai@^5 @ai-sdk/openai@^2
+
+# AI SDK 6
+npm install ai@^6 @ai-sdk/openai@^3
 ```
 
 AI SDK 7 applications require Node 22 or later and use the separate
@@ -666,6 +670,10 @@ background, so classification errors keep reaching the caller.
 AI SDK 7 uses the `LanguageModelV4Middleware` contract and requires Node 22 or
 later. Import its adapter explicitly; `Firewall.asMiddleware()` intentionally
 retains the AI SDK 5/6 v3 contract.
+
+```sh
+npm install ai@7.0.166 @ai-sdk/openai@4.0.111
+```
 
 ```ts
 import { generateText, wrapLanguageModel } from "ai";
